@@ -2,6 +2,7 @@ import type { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, LIDMapping } from './Auth'
 import type { WACallEvent } from './Call'
+import type { ChannelStatus } from './ChannelStatus'
 import type { Chat, ChatUpdate, PresenceData } from './Chat'
 import type { Contact } from './Contact'
 import type {
@@ -121,6 +122,8 @@ export type BaileysEventMap = {
 	'newsletter.view': { id: string; server_id: string; count: number }
 	'newsletter-participants.update': { id: string; author: string; user: string; new_role: string; action: string }
 	'newsletter-settings.update': { id: string; update: any }
+	/** a channel status posted by a channel admin — arrives as a top-level <status> stanza, not a message */
+	'newsletter.status': ChannelStatus
 
 	'message-capping.update': NewChatMessageCapInfo
 

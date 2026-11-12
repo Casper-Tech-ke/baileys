@@ -486,3 +486,74 @@ describe('encryptedStream', () => {
 		}
 	})
 })
+
+describe('generateProfilePicture', () => {
+	const makeImage = async (width: number, height: number, color: number, mime?: string) => {
+		const Jimp = (await import('jimp')).default as any
+		const img = await new Jimp(width, height, color)
+		return img.getBufferAsync(mime || Jimp.MIME_PNG)
+	}
+
+	it('default: a wide image is cropped to a 640x640 square', async () => {
+		const { generateProfilePicture } = await import('../../Utils/messages-media')
+		const Jimp = (await import('jimp')).default as any
+
+		const input = await makeImage(800, 400, 0xff0000ff)
+		const { img } = await generateProfilePicture(input)
+
+		const out = await Jimp.read(img)
+		expect(out.bitmap.width).toBe(640)
+		expect(out.bitmap.height).toBe(640)
+	}, 30000)
+
+	it('full: a JPEG within 640 goes up byte-for-byte, as it is', async () => {
+		const { generateProfilePicture } = await import('../../Utils/messages-media')
+		const Jimp = (await import('jimp')).default as any
+
+		const input = await makeImage(400, 300, 0xff0000ff, Jimp.MIME_JPEG)
+		const { img } = await generateProfilePicture(input, { full: true })
+
+		expect(img.equals(input)).toBe(true)
+		const out = await Jimp.read(img)
+		expect(out.bitmap.width).toBe(400)
+		expect(out.bitmap.height).toBe(300)
+	}, 30000)
+
+	it('full: a JPEG over 640 is scaled to fit 640, aspect kept, nothing cut', async () => {
+		const { generateProfilePicture } = await import('../../Utils/messages-media')
+		const Jimp = (await import('jimp')).default as any
+
+		// wide 800x400 — WhatsApp rejects a longest side over 640
+		const input = await makeImage(800, 400, 0xff0000ff, Jimp.MIME_JPEG)
+		const { img } = await generateProfilePicture(input, { full: true })
+
+		const out = await Jimp.read(img)
+		expect(out.bitmap.width).toBe(640)
+		expect(out.bitmap.height).toBe(320)
+	}, 30000)
+
+	it('full: a tall image over 640 is scaled to fit 640, aspect kept', async () => {
+		const { generateProfilePicture } = await import('../../Utils/messages-media')
+		const Jimp = (await import('jimp')).default as any
+
+		// tall 400x800
+		const input = await makeImage(400, 800, 0x0000ffff)
+		const { img } = await generateProfilePicture(input, { full: true })
+
+		const out = await Jimp.read(img)
+		expect(out.bitmap.width).toBe(320)
+		expect(out.bitmap.height).toBe(640)
+	}, 30000)
+
+	it('full: a non-JPEG within 640 is converted to JPEG at its original size, no resize', async () => {
+		const { generateProfilePicture } = await import('../../Utils/messages-media')
+		const Jimp = (await import('jimp')).default as any
+
+		const input = await makeImage(400, 300, 0x0000ffff)
+		const { img } = await generateProfilePicture(input, { full: true })
+
+		const out = await Jimp.read(img)
+		expect(out.bitmap.width).toBe(400)
+		expect(out.bitmap.height).toBe(300)
+	}, 30000)
+})

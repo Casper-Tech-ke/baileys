@@ -43,5 +43,60 @@ describe('LIDMappingStore', () => {
 			const result = await lidMappingStore.getPNForLID(lid)
 			expect(result).toBeNull()
 		})
+
+		it('should return the PN without a :0 device suffix for a primary-device LID', async () => {
+			const lid = '265726069833797@lid'
+			const pnUser = '254181847643'
+
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({ [`265726069833797_reverse`]: pnUser } as SignalDataTypeMap['lid-mapping'])
+
+			const result = await lidMappingStore.getPNForLID(lid)
+			expect(result).toBe(`${pnUser}@s.whatsapp.net`)
+		})
+	})
+
+	describe('storeLIDPNMappings round-trip', () => {
+		const makeMemoryKeys = () => {
+			const store: Record<string, Record<string, string>> = {}
+			return {
+				get: jest.fn(async (_type: string, ids: string[]) => {
+					const out: Record<string, string> = {}
+					for (const id of ids) {
+						const value = store[_type]?.[id]
+						if (value !== undefined) {
+							out[id] = value
+						}
+					}
+
+					return out
+				}),
+				set: jest.fn(async (data: Record<string, Record<string, string>>) => {
+					for (const [type, values] of Object.entries(data)) {
+						store[type] = { ...store[type], ...values }
+					}
+				}),
+				transaction: jest.fn(async (work: () => unknown) => await work()),
+				isInTransaction: jest.fn(() => false)
+			} as unknown as SignalKeyStoreWithTransaction
+		}
+
+		it('stores both directions and reads them back in canonical form', async () => {
+			const memoryKeys = makeMemoryKeys()
+			const store = new LIDMappingStore(memoryKeys, logger, mockPnToLIDFunc)
+			await store.storeLIDPNMappings([{ lid: '265726069833797@lid', pn: '254181847643@s.whatsapp.net' }])
+
+			expect(await store.getPNForLID('265726069833797@lid')).toBe('254181847643@s.whatsapp.net')
+			expect(await store.getLIDForPN('254181847643@s.whatsapp.net')).toBe('265726069833797@lid')
+		})
+
+		it('persists the reverse mapping so a fresh store instance can read it', async () => {
+			const memoryKeys = makeMemoryKeys()
+			const store = new LIDMappingStore(memoryKeys, logger, mockPnToLIDFunc)
+			await store.storeLIDPNMappings([{ lid: '265726069833797@lid', pn: '254181847643@s.whatsapp.net' }])
+
+			const freshStore = new LIDMappingStore(memoryKeys, logger, mockPnToLIDFunc)
+			expect(await freshStore.getPNForLID('265726069833797@lid')).toBe('254181847643@s.whatsapp.net')
+		})
 	})
 })

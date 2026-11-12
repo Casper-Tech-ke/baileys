@@ -35,12 +35,14 @@ const getImageProcessingLibrary = async () => {
 	//@ts-ignore
 	const [jimp, sharp] = await Promise.all([import('jimp').catch(() => {}), import('sharp').catch(() => {})])
 
-	if (sharp) {
-		return { sharp }
-	}
-
+	// jimp first: jimp 0.16.3's contain() fits the whole image into the
+	// square and pads the rest, so the profile picture is never cropped
 	if (jimp) {
 		return { jimp }
+	}
+
+	if (sharp) {
+		return { sharp }
 	}
 
 	throw new Boom('No image processing library available')
@@ -152,15 +154,20 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 				height: dimensions.height
 			}
 		}
-	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'object') {
-		const jimp = await (lib.jimp.Jimp as any).read(bufferOrFilePath)
-		const dimensions = {
-			width: jimp.width,
-			height: jimp.height
+	} else if ('jimp' in lib) {
+		// jimp 0.16.3: the default export is the Jimp class
+		const mod: any = lib.jimp
+		const Jimp = mod?.default ?? mod
+		if (typeof Jimp?.read !== 'function') {
+			throw new Boom('No image processing library available')
 		}
-		const buffer = await jimp
-			.resize({ w: width, mode: lib.jimp.ResizeStrategy.BILINEAR })
-			.getBuffer('image/jpeg', { quality: 50 })
+
+		const jimp = await Jimp.read(bufferOrFilePath)
+		const dimensions = {
+			width: jimp.bitmap.width,
+			height: jimp.bitmap.height
+		}
+		const buffer = await jimp.resize(width, Jimp.AUTO).quality(50).getBufferAsync(Jimp.MIME_JPEG)
 		return {
 			buffer,
 			original: dimensions
@@ -173,13 +180,17 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 export const encodeBase64EncodedStringForUpload = (b64: string) =>
 	encodeURIComponent(b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/\=+$/, ''))
 
-export const generateProfilePicture = async (
-	mediaUpload: WAMediaUpload,
-	dimensions?: { width: number; height: number }
-) => {
-	let buffer: Buffer
+export type ProfilePictureOptions = {
+	width?: number
+	height?: number
+	/** upload the image as it is — no resize, no crop, no padding */
+	full?: boolean
+	/** JPEG quality for a full upload (default 92) */
+	quality?: number
+}
 
-	const { width: w = 640, height: h = 640 } = dimensions || {}
+export const generateProfilePicture = async (mediaUpload: WAMediaUpload, options?: ProfilePictureOptions) => {
+	let buffer: Buffer
 
 	if (Buffer.isBuffer(mediaUpload)) {
 		buffer = mediaUpload
@@ -190,9 +201,75 @@ export const generateProfilePicture = async (
 		buffer = await toBuffer(stream)
 	}
 
+	// full: the image goes up as it is — no crop, no padding. WhatsApp
+	// rejects profile pictures whose longest side is over 640, so a
+	// bigger image is scaled down to fit 640 (aspect kept, nothing cut).
+	// A JPEG already within 640 is sent byte-for-byte.
+	if (options?.full) {
+		const MAX_SIDE = 640
+		const quality = options.quality ?? 92
+		const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+		const lib = await getImageProcessingLibrary()
+		if ('jimp' in lib) {
+			// jimp 0.16.3: the default export is the Jimp class
+			const mod: any = lib.jimp
+			const Jimp = mod?.default ?? mod
+			if (typeof Jimp?.read !== 'function') {
+				throw new Boom('No image processing library available')
+			}
+
+			const image = await Jimp.read(buffer)
+			const longest = Math.max(image.bitmap.width, image.bitmap.height)
+			if (isJpeg && longest <= MAX_SIDE) {
+				return { img: buffer }
+			}
+
+			if (longest > MAX_SIDE) {
+				if (image.bitmap.width >= image.bitmap.height) {
+					image.resize(MAX_SIDE, Jimp.AUTO)
+				} else {
+					image.resize(Jimp.AUTO, MAX_SIDE)
+				}
+			}
+
+			image.quality(quality)
+			return { img: await image.getBufferAsync(Jimp.MIME_JPEG) }
+		} else if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
+			const meta = await lib.sharp.default(buffer).metadata()
+			const longest = Math.max(meta.width ?? 0, meta.height ?? 0)
+			if (isJpeg && longest <= MAX_SIDE) {
+				return { img: buffer }
+			}
+
+			let pipeline = lib.sharp.default(buffer)
+			if (longest > MAX_SIDE) {
+				pipeline = pipeline.resize(MAX_SIDE, MAX_SIDE, { fit: 'inside' })
+			}
+
+			return { img: await pipeline.jpeg({ quality }).toBuffer() }
+		} else {
+			throw new Boom('No image processing library available')
+		}
+	}
+
+	// default: 640x640 center crop, quality 50
+	const { width: w = 640, height: h = 640 } = options || {}
+
 	const lib = await getImageProcessingLibrary()
 	let img: Promise<Buffer>
-	if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
+	if ('jimp' in lib) {
+		// jimp 0.16.3: the default export is the Jimp class
+		const mod: any = lib.jimp
+		const Jimp = mod?.default ?? mod
+		if (typeof Jimp?.read !== 'function') {
+			throw new Boom('No image processing library available')
+		}
+
+		const image = await Jimp.read(buffer)
+		image.cover(w, h)
+		image.quality(50)
+		img = image.getBufferAsync(Jimp.MIME_JPEG)
+	} else if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
 		img = lib.sharp
 			.default(buffer)
 			.resize(w, h)
@@ -200,12 +277,6 @@ export const generateProfilePicture = async (
 				quality: 50
 			})
 			.toBuffer()
-	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(buffer)
-		const min = Math.min(jimp.width, jimp.height)
-		const cropped = jimp.crop({ x: 0, y: 0, w: min, h: min })
-
-		img = cropped.resize({ w, h, mode: lib.jimp.ResizeStrategy.BILINEAR }).getBuffer('image/jpeg', { quality: 50 })
 	} else {
 		throw new Boom('No image processing library available')
 	}
@@ -380,18 +451,25 @@ type EncryptedStreamOptions = {
 	saveOriginalFileIfRequired?: boolean
 	logger?: ILogger
 	opts?: RequestInit
+	/**
+	 * Reuse an existing media key instead of generating a random one.
+	 * Used for thumbnails, which the receiver decrypts with the main
+	 * media's key and the thumbnail media type's HKDF info (there is no
+	 * separate mediaKey field for them in the proto).
+	 */
+	mediaKey?: Buffer
 }
 
 export const encryptedStream = async (
 	media: WAMediaUpload,
 	mediaType: MediaType,
-	{ logger, saveOriginalFileIfRequired, opts }: EncryptedStreamOptions = {}
+	{ logger, saveOriginalFileIfRequired, opts, mediaKey: providedMediaKey }: EncryptedStreamOptions = {}
 ) => {
 	const { stream, type } = await getStream(media, opts)
 
 	logger?.debug('fetched media stream')
 
-	const mediaKey = Crypto.randomBytes(32)
+	const mediaKey = providedMediaKey ?? Crypto.randomBytes(32)
 	const { cipherKey, iv, macKey } = await getMediaKeys(mediaKey, mediaType)
 
 	const encFilePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2() + '-enc')
@@ -991,7 +1069,7 @@ export const decryptMediaRetryData = (
 }
 
 export const getStatusCodeForMediaRetry = (code: number) =>
-	MEDIA_RETRY_STATUS_MAP[code as proto.MediaRetryNotification.ResultType]
+	MEDIA_RETRY_STATUS_MAP[code as keyof typeof MEDIA_RETRY_STATUS_MAP]
 
 const MEDIA_RETRY_STATUS_MAP = {
 	[proto.MediaRetryNotification.ResultType.SUCCESS]: 200,

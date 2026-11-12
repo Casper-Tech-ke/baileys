@@ -7,6 +7,7 @@ import type {
 	CacheStore,
 	ChatModification,
 	ChatMutation,
+	LastMessageList,
 	LTHashState,
 	MessageUpsertType,
 	PresenceData,
@@ -15,6 +16,7 @@ import type {
 	WABusinessProfile,
 	WAMediaUpload,
 	WAMessage,
+	WAMessageKey,
 	WAPatchCreate,
 	WAPatchName,
 	WAPresence,
@@ -43,7 +45,8 @@ import {
 	isMissingKeyError,
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState,
-	processSyncAction
+	processSyncAction,
+	type ProfilePictureOptions
 } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
@@ -309,11 +312,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	/** update the profile picture for yourself or a group */
-	const updateProfilePicture = async (
-		jid: string,
-		content: WAMediaUpload,
-		dimensions?: { width: number; height: number }
-	) => {
+	const updateProfilePicture = async (jid: string, content: WAMediaUpload, options?: ProfilePictureOptions) => {
 		let targetJid
 		if (!jid) {
 			throw new Boom(
@@ -327,7 +326,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			targetJid = undefined
 		}
 
-		const { img } = await generateProfilePicture(content, dimensions)
+		const { img } = await generateProfilePicture(content, options)
 		await query({
 			tag: 'iq',
 			attrs: {
@@ -1075,6 +1074,42 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	/**
+	 * Clear a chat — removes the WHOLE conversation (all its messages)
+	 * for you, the chat itself stays in the list. This is not deleting
+	 * one message; it wipes the entire chat history for you.
+	 * lastMessages are the chat's messages (at least the latest one) —
+	 * the server clears everything up to the last message's timestamp,
+	 * so pass the latest message to clear the whole conversation.
+	 * options.deleteStarred defaults to true (starred messages are
+	 * cleared too, as in the app when "Clear starred messages" is
+	 * ticked); pass { deleteStarred: false } to keep starred messages.
+	 */
+	const clearChat = (
+		jid: string,
+		lastMessages: LastMessageList,
+		options?: { deleteStarred?: boolean }
+	) => {
+		return chatModify({ clear: true, lastMessages, deleteStarred: options?.deleteStarred }, jid)
+	}
+
+	/**
+	 * Delete a chat — removes the whole chat, and its messages, for you.
+	 * lastMessages are the chat's recent messages, latest first.
+	 */
+	const deleteChat = (jid: string, lastMessages: LastMessageList) => {
+		return chatModify({ delete: true, lastMessages }, jid)
+	}
+
+	/**
+	 * Delete one message for yourself only — it stays for everyone else.
+	 * timestamp is the message's messageTimestamp (unix seconds).
+	 * deleteMedia also deletes the message's media from your device.
+	 */
+	const deleteMessageForMe = (jid: string, key: WAMessageKey, timestamp: number, deleteMedia = false) => {
+		return chatModify({ deleteForMe: { deleteMedia, key, timestamp } }, jid)
+	}
+
+	/**
 	 * Add or Edit Contact
 	 */
 	const addOrEditContact = (jid: string, contact: proto.SyncActionValue.IContactAction) => {
@@ -1517,6 +1552,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getBusinessProfile,
 		resyncAppState,
 		chatModify,
+		clearChat,
+		deleteChat,
+		deleteMessageForMe,
 		cleanDirtyBits,
 		addOrEditContact,
 		removeContact,

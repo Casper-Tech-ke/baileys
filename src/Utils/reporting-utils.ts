@@ -269,6 +269,15 @@ const extractReportingTokenContent = (data: Buffer, cfg: Map<number, CompiledRep
 	return Buffer.concat(out.map(f => f.bytes))
 }
 
+/**
+ * Whitelisted-field bytes of an encoded message, for the `<raw>` child of a
+ * spam-report IQ. These are the same bytes the reporting token is an HMAC
+ * over, so the server can verify the reported content genuinely came from
+ * the alleged sender. Returns null when the message has no reportable fields.
+ */
+export const extractReportingTokenContentForMessage = (msgProtobuf: Buffer): Buffer | null =>
+	extractReportingTokenContent(msgProtobuf, compiledReportingFields)
+
 type Varint = { value: number; bytes: number; ok: boolean }
 
 const decodeVarint = (buffer: Buffer, offset: number): Varint => {

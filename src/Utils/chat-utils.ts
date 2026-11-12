@@ -387,7 +387,7 @@ export const extractSyncdPatches = async (result: BinaryNode, options: RequestIn
 						content = Buffer.from(Object.values(content))
 					}
 
-					const syncd = proto.SyncdPatch.decode(content as Uint8Array)
+					const syncd = proto.SyncdPatch.decode(content)
 					if (!syncd.version) {
 						syncd.version = { version: +collectionNode.attrs.version! + 1 }
 					}
@@ -651,7 +651,9 @@ export const chatModificationToAppPatch = (mod: ChatModification, jid: string) =
 					messageRange: getMessageRange(mod.lastMessages)
 				}
 			},
-			index: ['clearChat', jid, '1' /*the option here is 0 when keep starred messages is enabled*/, '0'],
+			// index[2] is '1' to clear starred messages too (the app's "Clear starred messages" checkbox ticked),
+			// '0' to keep them — default '1', matching the previous behaviour
+			index: ['clearChat', jid, mod.deleteStarred === false ? '0' : '1', '0'],
 			type: 'regular_high',
 			apiVersion: 6,
 			operation: OP.SET
@@ -937,6 +939,21 @@ export const processSyncAction = (
 	} else if (action?.deleteChatAction || type === 'deleteChat') {
 		if (!isInitialSync) {
 			ev.emit('chats.delete', [id!])
+		}
+	} else if (action?.clearChatAction || type === 'clearChat') {
+		// a clear from another device arrives as an app-state patch with only a
+		// messageRange; fold it into chats.update with an empty messages list so
+		// listeners can see the chat was cleared. Like delete, only emit outside
+		// the initial sync — during the initial sync a clear is just part of the
+		// baseline state.
+		if (!isInitialSync) {
+			ev.emit('chats.update', [
+				{
+					id,
+					messages: [],
+					conditional: getChatUpdateConditional(id!, action?.clearChatAction?.messageRange)
+				}
+			])
 		}
 	} else if (action?.labelEditAction) {
 		const { name, color, deleted, predefinedId } = action.labelEditAction

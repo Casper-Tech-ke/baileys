@@ -12,6 +12,11 @@ import type {
 	WAMessage,
 	WAMessageKey
 } from '../Types'
+import type { PaymentInviteOptions, RequestPaymentOptions, SendPaymentOptions } from '../Types/Payment'
+import type { SpamReportOptions } from '../Types/Report'
+import { SPAM_FLOWS, SPAM_REPORT_REASONS } from '../Types/Report'
+import type { StickerPack } from '../Types/StickerPack'
+import type { SetUsernameOptions, UsernameSource } from '../Types/Username'
 import {
 	aggregateMessageKeysNotFromMe,
 	assertMediaContent,
@@ -38,7 +43,6 @@ import {
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
-import { sendGroupStatus, type GroupStatusOptions } from './groupStatus.js'
 import {
 	buildMergedTcTokenIndexWrite,
 	isTcTokenExpired,
@@ -69,7 +73,43 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
+import { type ChannelStatusOptions, sendChannelStatus } from './channelStatus.js'
+import { type GroupStatusOptions, sendGroupStatus } from './groupStatus.js'
 import { makeNewsletterSocket } from './newsletter'
+import {
+	cancelPaymentRequest,
+	declinePaymentRequest,
+	requestPayment,
+	sendPayment,
+	sendPaymentInvite
+} from './payment.js'
+import {
+	reportAndBlock,
+	reportChannelStatus,
+	reportContact,
+	reportEvent,
+	reportGroup,
+	reportNewsletter,
+	reportSpam,
+	reportStatus
+} from './report.js'
+import { sendStickerPack } from './stickerPack.js'
+import {
+	checkUsername,
+	checkUsernameMulti,
+	deleteUsername,
+	fetchContactUsernames,
+	findUserByUsername,
+	getMyUsername,
+	getUsernameRecommendations,
+	setUsername,
+	setUsernamePin,
+	setUsernameQueryIds,
+	USERNAME_CHECK_RESULT,
+	USERNAME_QUERY_IDS,
+	USERNAME_SOURCE,
+	type UsernameQueryIds
+} from './username.js'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -90,6 +130,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		signalRepository,
 		upsertMessage,
 		query,
+		generateMessageTag,
 		fetchPrivacySettings,
 		sendNode,
 		groupMetadata,
@@ -499,24 +540,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return didFetchNewSession
 	}
 
-	const sendPeerDataOperationMessage = async (
-		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
-	): Promise<string> => {
-		//TODO: for later, abstract the logic to send a Peer Message instead of just PDO - useful for App State Key Resync with phone
+	const sendPeerMessage = async (protocolMessage: proto.IMessage['protocolMessage']): Promise<string> => {
 		if (!authState.creds.me?.id) {
 			throw new Boom('Not authenticated')
 		}
 
-		const protocolMessage: proto.IMessage = {
-			protocolMessage: {
-				peerDataOperationRequestMessage: pdoMessage,
-				type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_MESSAGE
-			}
-		}
-
 		const meJid = jidNormalizedUser(authState.creds.me.id)
 
-		const msgId = await relayMessage(meJid, protocolMessage, {
+		const msgId = await relayMessage(meJid, { protocolMessage }, {
 			additionalAttributes: {
 				category: 'peer',
 
@@ -530,6 +561,40 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			]
 		})
 
+		return msgId
+	}
+
+	const sendPeerDataOperationMessage = async (
+		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
+	): Promise<string> => {
+		return sendPeerMessage({
+			peerDataOperationRequestMessage: pdoMessage,
+			type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_MESSAGE
+		})
+	}
+
+	// Ask the phone (primary device) to share app-state sync keys we are
+	// missing, e.g. the rotated key the server now encrypts chat state with.
+	// Mirrors whatsmeow's requestAppStateKeys: a peer protocol message of
+	// type APP_STATE_SYNC_KEY_REQUEST, sent to our own JID. The phone is
+	// expected to answer with an APP_STATE_SYNC_KEY_SHARE, which Baileys
+	// already handles in process-message.ts (stores the key, emits
+	// creds.update with myAppStateKeyId). Whatsmeow throttles this to one
+	// request per key per 24h; callers should do the same. Unproven whether
+	// the phone answers for a rotated key on an imported (non-linked) session.
+	const requestAppStateSyncKey = async (keyIds: string[]): Promise<string> => {
+		if (!keyIds?.length) {
+			throw new Boom('At least one app state sync key ID is required', { statusCode: 400 })
+		}
+
+		const msgId = await sendPeerMessage({
+			type: proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST,
+			appStateSyncKeyRequest: {
+				keyIds: keyIds.map(keyId => ({ keyId: Buffer.from(keyId, 'base64') }))
+			}
+		})
+
+		logger.info({ keyIds, msgId }, 'requested app state sync keys from phone')
 		return msgId
 	}
 
@@ -1259,6 +1324,62 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 	})
 
+	const usernameDeps = {
+		query,
+		generateMessageTag,
+		executeUSyncQuery: sock.executeUSyncQuery
+	}
+
+	const reportDeps = {
+		query,
+		meJid: authState.creds.me?.id,
+		updateBlockStatus: sock.updateBlockStatus
+	}
+
+	const stickerPackDeps = {
+		relayMessage,
+		upload: waUploadToServer,
+		userJid: authState.creds.me?.id,
+		logger
+	}
+
+	const paymentDeps = {
+		relayMessage,
+		userJid: authState.creds.me?.id,
+		meJid: authState.creds.me?.id
+	}
+
+	/**
+	 * Delete a message for everyone (revoke) — it is removed for all
+	 * participants. In a group, an admin can delete someone else's message.
+	 */
+	const deleteMessage = async (jid: string, key: WAMessageKey) => {
+		const fullMsg = await generateWAMessage(
+			jid,
+			{ delete: key },
+			{
+				logger,
+				userJid: authState.creds.me!.id,
+				upload: waUploadToServer,
+				messageId: generateMessageIDV2(sock.user?.id)
+			}
+		)
+		await relayMessage(jid, fullMsg.message!, {
+			messageId: fullMsg.key.id!,
+			additionalAttributes: {
+				// group + not the author => delete as an admin
+				edit: isJidGroup(key.remoteJid as string) && !key.fromMe ? '8' : '7'
+			}
+		})
+		if (config.emitOwnEvents) {
+			process.nextTick(async () => {
+				await messageMutex.mutex(() => upsertMessage(fullMsg, 'append'))
+			})
+		}
+
+		return fullMsg
+	}
+
 	return {
 		...sock,
 		userDevicesCache,
@@ -1277,6 +1398,61 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				},
 				options
 			),
+		sendChannelStatus: (jid: string, content: AnyMessageContent, options: ChannelStatusOptions = {}) =>
+			sendChannelStatus(
+				jid,
+				content,
+				{
+					sendNode,
+					waUploadToServer,
+					userJid: authState.creds.me?.id
+				},
+				options
+			),
+		checkUsername: (username: string, includeSuggestions = true, sessionId?: string) =>
+			checkUsername(username, usernameDeps, includeSuggestions, sessionId),
+		checkUsernameMulti: (usernames: string[]) => checkUsernameMulti(usernames, usernameDeps),
+		setUsername: (username: string, options: SetUsernameOptions = {}) => setUsername(username, usernameDeps, options),
+		deleteUsername: () => deleteUsername(usernameDeps),
+		getMyUsername: () => getMyUsername(usernameDeps),
+		getUsernameRecommendations: (source: UsernameSource | null = null) =>
+			getUsernameRecommendations(usernameDeps, source),
+		setUsernamePin: (pin: string | null) => setUsernamePin(pin, usernameDeps),
+		findUserByUsername: (username: string, pin?: string) => findUserByUsername(username, usernameDeps, pin),
+		fetchContactUsernames: (...jids: string[]) => fetchContactUsernames(jids, usernameDeps),
+		setUsernameQueryIds: (ids: Partial<UsernameQueryIds>) => setUsernameQueryIds(ids),
+		USERNAME_QUERY_IDS,
+		USERNAME_CHECK_RESULT,
+		USERNAME_SOURCE,
+		reportSpam: (messages: WAMessage[], options: SpamReportOptions = {}) => reportSpam(messages, reportDeps, options),
+		reportContact: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportContact(jid, messages, reportDeps, options),
+		reportGroup: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportGroup(jid, messages, reportDeps, options),
+		reportStatus: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportStatus(jid, messages, reportDeps, options),
+		reportNewsletter: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportNewsletter(jid, messages, reportDeps, options),
+		reportChannelStatus: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportChannelStatus(jid, messages, reportDeps, options),
+		reportEvent: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportEvent(jid, messages, reportDeps, options),
+		reportAndBlock: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
+			reportAndBlock(jid, messages, reportDeps, options),
+		SPAM_FLOWS,
+		SPAM_REPORT_REASONS,
+		getPNForLID: (lid: string) => signalRepository.lidMapping.getPNForLID(lid),
+		getPNsForLIDs: (lids: string[]) => signalRepository.lidMapping.getPNsForLIDs(lids),
+		getLIDForPN: (pn: string) => signalRepository.lidMapping.getLIDForPN(pn),
+		getLIDsForPNs: (pns: string[]) => signalRepository.lidMapping.getLIDsForPNs(pns),
+		sendStickerPack: (jid: string, pack: StickerPack) => sendStickerPack(jid, pack, stickerPackDeps),
+		requestPayment: (jid: string, options: RequestPaymentOptions) => requestPayment(jid, options, paymentDeps),
+		sendPayment: (jid: string, options: SendPaymentOptions) => sendPayment(jid, options, paymentDeps),
+		declinePaymentRequest: (jid: string, key: WAMessageKey) => declinePaymentRequest(jid, key, paymentDeps),
+		cancelPaymentRequest: (jid: string, key: WAMessageKey) => cancelPaymentRequest(jid, key, paymentDeps),
+		sendPaymentInvite: (jid: string, options: PaymentInviteOptions = {}) =>
+			sendPaymentInvite(jid, options, paymentDeps),
+		deleteMessage,
 		sendReceipt,
 		sendReceipts,
 		readMessages,
@@ -1286,6 +1462,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		waUploadToServer,
 		fetchPrivacySettings,
 		sendPeerDataOperationMessage,
+		sendPeerMessage,
+		requestAppStateSyncKey,
 		createParticipantNodes,
 		getUSyncDevices,
 		messageRetryManager,
@@ -1401,14 +1579,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						attrs: {
 							polltype: 'creation'
 						}
-					} as BinaryNode)
+					})
 				} else if (isEventMsg) {
 					additionalNodes.push({
 						tag: 'meta',
 						attrs: {
 							event_type: 'creation'
 						}
-					} as BinaryNode)
+					})
 				}
 
 				await relayMessage(jid, fullMsg.message!, {

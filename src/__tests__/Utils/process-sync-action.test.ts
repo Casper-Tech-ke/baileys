@@ -20,18 +20,17 @@ const createMockEventEmitter = () => {
 	} as unknown as BaileysEventEmitter & { emittedEvents: typeof emittedEvents }
 }
 
-const createMockLogger = (): ILogger =>
-	({
-		warn: jest.fn(),
-		info: jest.fn(),
-		debug: jest.fn(),
-		error: jest.fn(),
-		trace: jest.fn(),
-		child: jest.fn(function (this: ILogger) {
-			return this
-		}),
-		level: 'silent'
-	}) as unknown as ILogger
+const createMockLogger = (): ILogger => ({
+	warn: jest.fn(),
+	info: jest.fn(),
+	debug: jest.fn(),
+	error: jest.fn(),
+	trace: jest.fn(),
+	child: jest.fn(function (this: ILogger) {
+		return this
+	}),
+	level: 'silent'
+})
 
 const createSyncAction = (
 	action: proto.ISyncActionValue,
@@ -237,6 +236,38 @@ describe('processSyncAction', () => {
 			])
 			processSyncAction(syncAction, ev, mockMe, { accountSettings: { unarchiveChats: false } }, logger)
 			expect(ev.emit).not.toHaveBeenCalled()
+		})
+	})
+
+	describe('clearChatAction', () => {
+		it('emits chats.update with empty messages when not initial sync', () => {
+			const syncAction = createSyncAction({ clearChatAction: { messageRange: { lastMessageTimestamp: 1700000000 } } }, [
+				'clearChat',
+				'chat@s.whatsapp.net'
+			])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger)
+			expect(ev.emit).toHaveBeenCalledWith(
+				'chats.update',
+				expect.arrayContaining([expect.objectContaining({ id: 'chat@s.whatsapp.net', messages: [] })])
+			)
+		})
+
+		it('does NOT emit during initial sync', () => {
+			const syncAction = createSyncAction({ clearChatAction: { messageRange: { lastMessageTimestamp: 1700000000 } } }, [
+				'clearChat',
+				'chat@s.whatsapp.net'
+			])
+			processSyncAction(syncAction, ev, mockMe, { accountSettings: { unarchiveChats: false } }, logger)
+			expect(ev.emit).not.toHaveBeenCalled()
+		})
+
+		it('handles type fallback without clearChatAction', () => {
+			const syncAction = createSyncAction({}, ['clearChat', 'chat@s.whatsapp.net'])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger)
+			expect(ev.emit).toHaveBeenCalledWith(
+				'chats.update',
+				expect.arrayContaining([expect.objectContaining({ id: 'chat@s.whatsapp.net', messages: [] })])
+			)
 		})
 	})
 

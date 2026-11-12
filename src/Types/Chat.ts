@@ -99,6 +99,8 @@ export type ChatModification =
 	| {
 			clear: boolean
 			lastMessages: LastMessageList
+			/** false keeps starred messages (the app's "Clear starred messages" checkbox unticked); default true clears them too */
+			deleteStarred?: boolean
 	  }
 	| {
 			deleteForMe: { deleteMedia: boolean; key: WAMessageKey; timestamp: number }
