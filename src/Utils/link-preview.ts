@@ -83,16 +83,28 @@ export const getUrlInfo = async (
 			}
 
 			if (opts.uploadImage) {
-				const { imageMessage } = await prepareWAMessageMedia(
-					{ image: { url: image! } },
-					{
-						upload: opts.uploadImage,
-						mediaTypeOverride: 'thumbnail-link',
-						options: opts.fetchOpts
+				// A bad/missing thumbnail must not kill the whole preview:
+				// title/description were already fetched. Fall through to
+				// the local-compression path (also fault-tolerant) on failure.
+				try {
+					const { imageMessage } = await prepareWAMessageMedia(
+						{ image: { url: image! } },
+						{
+							upload: opts.uploadImage,
+							mediaTypeOverride: 'thumbnail-link',
+							options: opts.fetchOpts
+						}
+					)
+					urlInfo.jpegThumbnail = imageMessage?.jpegThumbnail ? Buffer.from(imageMessage.jpegThumbnail) : undefined
+					urlInfo.highQualityThumbnail = imageMessage || undefined
+				} catch (error: any) {
+					opts.logger?.debug({ err: error.stack, url: previewLink }, 'error in generating thumbnail')
+					try {
+						urlInfo.jpegThumbnail = image ? (await getCompressedJpegThumbnail(image, opts)).buffer : undefined
+					} catch {
+						// No thumbnail — the preview (title/description) still returns.
 					}
-				)
-				urlInfo.jpegThumbnail = imageMessage?.jpegThumbnail ? Buffer.from(imageMessage.jpegThumbnail) : undefined
-				urlInfo.highQualityThumbnail = imageMessage || undefined
+				}
 			} else {
 				try {
 					urlInfo.jpegThumbnail = image ? (await getCompressedJpegThumbnail(image, opts)).buffer : undefined

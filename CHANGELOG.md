@@ -4,6 +4,18 @@
 
 ### Features
 
+- **Link preview on group statuses** (`sock.sendGroupStatus()`) — a text
+  group status containing a URL now gets the same link preview card
+  (title / description / thumbnail) a regular message would. `sendMessage`
+  already wired `getUrlInfo` into `generateWAMessage`; `sendGroupStatus`
+  did not, so statuses never got a preview. The socket's link-preview
+  config (`linkPreviewImageThumbnailWidth`,
+  `generateHighQualityLinkPreview`, HTTP `options`, `logger`) is now
+  passed through `GroupStatusDeps` and into `generateWAMessageContent`,
+  exactly like `sendMessage`. No new API: `sendGroupStatus(jid, { text:
+  'see https://example.com' })` just works.
+
+
 - **Group history sharing** (`sock.sendGroupHistory()`) — the native
   `messageHistoryBundle` flow WhatsApp's own client uses when an admin
   adds a member (last 25–100 messages, E2EE). Reverse-engineered from
