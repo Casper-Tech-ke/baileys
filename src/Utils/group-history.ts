@@ -1,5 +1,7 @@
-import { Writer } from 'protobufjs/minimal'
+import $protobuf from 'protobufjs/minimal.js'
 import { proto } from '../../WAProto/index.js'
+
+const { Writer } = $protobuf
 
 /**
  * Group history sharing (native `messageHistoryBundle`).
