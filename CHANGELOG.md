@@ -22,7 +22,13 @@
 
   `messages` are full `proto.IWebMessageInfo` objects (key + content +
   timestamp). The bundle is encrypted with the document media keys and
-  uploaded to `/mms/document`. Live test pending.
+  uploaded to `/mms/document`. Live test 2026-11-13 ~12:4x EAT (VPS,
+  baba hany → tester group, 5 messages to new member
+  109771495633133@lid): **bundle + notice both sent and visible in the
+  group** (bundle 3EB06BAF5CC794022D0095, notice 3EB0254E19B3B9BC0E7BCD,
+  directPath `/v/t62.7119-24/794138976_3019077851787904_904926531635696930`).
+  Whether the new member's client imported the history is pending the
+  user's check on his phone.
 
 - **Delete and clear chat** (`sock.clearChat()`, `sock.deleteChat()`,
   `sock.deleteMessage()`, `sock.deleteMessageForMe()`)
