@@ -74,6 +74,7 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { type ChannelStatusOptions, sendChannelStatus } from './channelStatus.js'
+import { type GroupHistoryDeps, type SendGroupHistoryOptions, sendGroupHistory } from './groupHistory.js'
 import { type GroupStatusOptions, sendGroupStatus } from './groupStatus.js'
 import { makeNewsletterSocket } from './newsletter'
 import {
@@ -1407,6 +1408,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					waUploadToServer,
 					userJid: authState.creds.me?.id
 				},
+				options
+			),
+		sendGroupHistory: (
+			jid: string,
+			receivers: string[],
+			messages: proto.IWebMessageInfo[],
+			options: SendGroupHistoryOptions = {}
+		) =>
+			sendGroupHistory(
+				jid,
+				receivers,
+				messages,
+				{
+					relayMessage,
+					waUploadToServer,
+					userJid: authState.creds.me?.id,
+					logger
+				} satisfies GroupHistoryDeps,
 				options
 			),
 		checkUsername: (username: string, includeSuggestions = true, sessionId?: string) =>

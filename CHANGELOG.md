@@ -4,6 +4,26 @@
 
 ### Features
 
+- **Group history sharing** (`sock.sendGroupHistory()`) — the native
+  `messageHistoryBundle` flow WhatsApp's own client uses when an admin
+  adds a member (last 25–100 messages, E2EE). Reverse-engineered from
+  the WhatsApp Android APK: the history is an encrypted bundle file
+  (Ft1 protobuf of WebMessageInfo entries) uploaded as document media,
+  then a `messageHistoryBundle` message plus a `messageHistoryNotice`
+  record are sent into the group; the receivers' clients download,
+  decrypt and import the bundle. A standalone notice on its own is
+  dropped by the server — the bundle file is the actual history. No
+  public Baileys fork, whatsmeow or other library had implemented this
+  (re-verified Sep 2026); this is the first native implementation.
+
+  ```ts
+  await sock.sendGroupHistory('120363432773315685@g.us', ['109771495633133@lid'], messages)
+  ```
+
+  `messages` are full `proto.IWebMessageInfo` objects (key + content +
+  timestamp). The bundle is encrypted with the document media keys and
+  uploaded to `/mms/document`. Live test pending.
+
 - **Delete and clear chat** (`sock.clearChat()`, `sock.deleteChat()`,
   `sock.deleteMessage()`, `sock.deleteMessageForMe()`)
 
