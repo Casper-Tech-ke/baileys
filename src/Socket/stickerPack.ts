@@ -113,9 +113,19 @@ export const sendStickerPack = async (
 		{ name: trayIconFileName, data: trayIconData }
 	])
 
-	// upload the pack ZIP, then the tray icon (encrypted under the pack key)
+	// The thumbnail must be a 252x252 JPEG cover, not the raw tray icon.
+	// The reference telepack builds the cover from the first sticker and
+	// sends its sha256 (base64) as imageDataHash — without it the pack
+	// opens to skeleton loading. When the caller supplies a cover we use
+	// it; otherwise the tray icon doubles as the thumbnail (legacy path).
+	const coverData = pack.cover ? await readMedia(pack.cover) : trayIconData
+	const imageDataHash = pack.cover
+		? crypto.createHash('sha256').update(coverData).digest('base64')
+		: undefined
+
+	// upload the pack ZIP, then the thumbnail cover (encrypted under the pack key)
 	const packUpload = await uploadEncrypted(zip, 'sticker-pack', undefined, deps)
-	const iconUpload = await uploadEncrypted(trayIconData, 'thumbnail-sticker-pack', packUpload.mediaKey, deps)
+	const iconUpload = await uploadEncrypted(coverData, 'thumbnail-sticker-pack', packUpload.mediaKey, deps)
 
 	const messageSecret = crypto.randomBytes(32)
 
@@ -143,6 +153,7 @@ export const sendStickerPack = async (
 				directPath: packUpload.directPath,
 				mediaKeyTimestamp: unixTimestampSeconds(),
 				trayIconFileName,
+				imageDataHash,
 				// the app hardcodes the thumbnail at 252x252
 				thumbnailDirectPath: iconUpload.directPath,
 				thumbnailSha256: iconUpload.fileSha256,

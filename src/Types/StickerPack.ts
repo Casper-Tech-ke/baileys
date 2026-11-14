@@ -32,6 +32,12 @@ export type StickerPack = {
 	trayIcon: WAMediaUpload
 	/** File name of the tray icon inside the pack ZIP. Defaults to 'tray.png'. */
 	trayIconFileName?: string
+	/** Optional 252x252 JPEG cover for the pack thumbnail. When given, it is
+	 * uploaded as the thumbnail (instead of the raw tray icon) and its
+	 * sha256 (base64) is sent as imageDataHash — the reference telepack
+	 * approach. Without it the thumbnail is the tray icon and imageDataHash
+	 * is omitted, which makes the pack open to skeleton loading. */
+	cover?: WAMediaUpload
 	/** Pack id. Defaults to a random UUID. */
 	stickerPackId?: string
 	/** Pack origin. Defaults to 'THIRD_PARTY' (a pack sent by an app/library). */
