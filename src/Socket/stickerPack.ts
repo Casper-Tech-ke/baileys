@@ -84,8 +84,10 @@ export const sendStickerPack = async (
 ): Promise<StickerPackResult> => {
 	const { relayMessage, userJid, logger } = deps
 
-	if (!pack.name || !pack.publisher) {
-		throw new Boom('sticker pack needs a name and a publisher', { statusCode: 400 })
+	// The publisher is optional — a pack may be sent with no publisher
+	// (the user asked for publisher-free packs). Only the name is required.
+	if (!pack.name) {
+		throw new Boom('sticker pack needs a name', { statusCode: 400 })
 	}
 
 	if (!pack.stickers?.length || pack.stickers.length > MAX_STICKERS) {
