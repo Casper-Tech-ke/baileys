@@ -857,6 +857,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
 						lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
 						username: attrs.participant_username || attrs.username || undefined,
+						tag: attrs.tag || undefined,
 						admin: (attrs.type || null) as GroupParticipant['admin']
 					}
 				})
@@ -878,6 +879,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
 						lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
 						username: attrs.participant_username || attrs.username || undefined,
+						tag: attrs.tag || undefined,
 						admin: (attrs.type || null) as GroupParticipant['admin']
 					}
 				})

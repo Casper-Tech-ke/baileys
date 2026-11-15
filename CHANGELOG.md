@@ -21,6 +21,21 @@
 
 ### Features
 
+- **Member tag (`modify`) now carries the tag text** — `groupParticipantsUpdate`
+  gained an optional 4th `tag` argument: for the `modify` action a non-empty
+  tag is sent as a `tag` attribute on the `<participant>` node
+  (`<modify><participant jid="..." tag="TEXT"/></modify>`), matching the
+  official app's member-tag flow (WhatsApp APK 2.26.45.71: the tag is a
+  free-text label, max 30 chars, stored on the participant record
+  `C13710jB.A04`, read from group metadata via
+  `GroupParticipantsManager.getMemberTag`, and set through the group request
+  layer — `C2JZ.A00` → `C17232wK.A00`, empty text = clear). Omitting the
+  tag sends the bare modify (clear). `GroupParticipant` gained a `tag`
+  field, and `extractGroupMetadata` + `handleGroupNotification` now parse
+  `attrs.tag`, so tags set in the official app show up in group metadata
+  instead of being dropped. The official client only ever sets its OWN tag;
+  setting another member's tag is unproven and left to the live test.
+
 - **Link preview on group statuses** (`sock.sendGroupStatus()`) — a text
   group status containing a URL now gets the same link preview card
   (title / description / thumbnail) a regular message would. `sendMessage`

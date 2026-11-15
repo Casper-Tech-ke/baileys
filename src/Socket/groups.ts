@@ -157,14 +157,20 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 				return { status: p.attrs.error || '200', jid: p.attrs.jid }
 			})
 		},
-		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction, tag?: string) => {
 			const result = await groupQuery(jid, 'set', [
 				{
 					tag: action,
 					attrs: {},
 					content: participants.map(jid => ({
 						tag: 'participant',
-						attrs: { jid }
+						// A member tag is a free-text label (max 30 chars) the
+						// official app sends as a `tag` attribute on the
+						// <participant> node of a w:g2 <modify> action
+						// (WhatsApp APK 2.26.45.71: C13710jB.A04, set via
+						// C2JZ.A00 -> C17232wK.A00; empty text = clear, so
+						// no tag attribute means 'clear the tag').
+						attrs: { jid, ...(action === 'modify' && tag ? { tag } : {}) }
 					}))
 				}
 			])
@@ -373,6 +379,7 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 				phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
 				lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
 				username: attrs.participant_username || attrs.username || undefined,
+				tag: attrs.tag || undefined,
 				admin: (attrs.type || null) as GroupParticipant['admin']
 			}
 		}),

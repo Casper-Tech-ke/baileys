@@ -5,6 +5,8 @@ export type GroupParticipant = Contact & {
 	isAdmin?: boolean
 	isSuperAdmin?: boolean
 	admin?: 'admin' | 'superadmin' | null
+	/** free-text member tag (max 30 chars) — the label a member sets for themselves in the group */
+	tag?: string
 }
 
 export type ParticipantAction = 'add' | 'remove' | 'promote' | 'demote' | 'modify'
