@@ -844,8 +844,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 				break
 			case 'modify':
-				const oldNumber = getBinaryNodeChildren(child, 'participant').map(p => p.attrs.jid!)
-				msg.messageStubParameters = oldNumber || []
+				// 'modify' is not only a number change: the same w:g2
+				// notification carries member tag / role changes (the
+				// official app's GroupNotificationHandler lists "modify"
+				// alongside add/promote/demote/remove). Build the same
+				// full participant objects as promote/demote/add so the
+				// attributes (incl. the new admin/tag type) survive into
+				// messageStubParameters instead of bare JID strings.
+				const modifyParticipants = getBinaryNodeChildren(child, 'participant').map(({ attrs }) => {
+					return {
+						id: attrs.jid!,
+						phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
+						lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
+						username: attrs.participant_username || attrs.username || undefined,
+						admin: (attrs.type || null) as GroupParticipant['admin']
+					}
+				})
+				msg.messageStubParameters = modifyParticipants.map(a => JSON.stringify(a))
 				msg.messageStubType = WAMessageStubType.GROUP_PARTICIPANT_CHANGE_NUMBER
 				break
 			case 'promote':

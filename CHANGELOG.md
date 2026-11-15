@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- **Group member tag / role changes (`modify`) now emit `group-participants.update`** —
+  the `w:g2` `modify` notification (member tag / admin-role change, confirmed
+  as a recognised action in the official app's GroupNotificationHandler —
+  WhatsApp APK 2.26.45.71, `C1S4.java:31035`) was reduced to bare JID strings
+  in `handleGroupNotification`, and `process-message` then `JSON.parse`d each
+  param, which throws on a bare JID — so the `modify` event never fired and
+  the bot's membership-tag handler never ran. `handleGroupNotification` now
+  builds the same full participant objects as promote/demote/add
+  (`{ id, phoneNumber, lid, username, admin }`, JSON-stringified into
+  `messageStubParameters`), and the `CHANGE_NUMBER` case parses defensively
+  (bare JID falls back to `{ id }` instead of throwing). Verified with a
+  synthetic `processMessage` test: bare-JID and JSON-object params both emit
+  `group-participants.update` with action `modify` and the participant
+  attributes intact.
+
 ### Features
 
 - **Link preview on group statuses** (`sock.sendGroupStatus()`) — a text

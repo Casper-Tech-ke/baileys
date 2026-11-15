@@ -666,7 +666,17 @@ const processMessage = async (
 
 		switch (message.messageStubType) {
 			case WAMessageStubType.GROUP_PARTICIPANT_CHANGE_NUMBER:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				// Params are JSON participant objects (see
+				// handleGroupNotification 'modify'), but a bare JID
+				// param must not kill the event with a JSON.parse
+				// throw — fall back to a bare { id } participant.
+				participants = (message.messageStubParameters || []).map((a: any) => {
+					try {
+						return typeof a === 'string' ? JSON.parse(a) : a
+					} catch {
+						return { id: String(a) }
+					}
+				}) || []
 				emitParticipantsUpdate('modify')
 				break
 			case WAMessageStubType.GROUP_PARTICIPANT_LEAVE:
