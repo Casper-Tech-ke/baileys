@@ -32,7 +32,7 @@ export type SendGroupHistoryResult = {
  * someone (last 25–100 messages, E2EE).
  *
  * Builds the encrypted bundle file (Ft1 protobuf of the given messages),
- * uploads it as document media, sends the `messageHistoryBundle` message
+ * uploads it as group-history media, sends the `messageHistoryBundle` message
  * into the group, then the `messageHistoryNotice` record. The receivers'
  * clients download, decrypt and import the bundle.
  *
@@ -59,8 +59,9 @@ export const sendGroupHistory = async (
 	const bundleBytes = encodeGroupHistoryBundle(messages)
 	logger?.debug({ bytes: bundleBytes.length, count: messages.length }, 'built group history bundle')
 
-	// 2. Encrypt it like document media
-	const { mediaKey, encFilePath, fileEncSha256, fileSha256 } = await encryptedStream(bundleBytes, 'document', {
+	// 2. Encrypt it with the group-history media type — the official client
+	// uses HKDF info "Group History" for these bundles, not "WhatsApp Document Keys"
+	const { mediaKey, encFilePath, fileEncSha256, fileSha256 } = await encryptedStream(bundleBytes, 'group-history', {
 		logger
 	})
 
@@ -70,7 +71,7 @@ export const sendGroupHistory = async (
 	try {
 		const uploaded = await waUploadToServer(encFilePath, {
 			fileEncSha256B64,
-			mediaType: 'document',
+			mediaType: 'group-history',
 			timeoutMs: options.mediaUploadTimeoutMs
 		})
 		directPath = uploaded.directPath

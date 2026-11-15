@@ -4,6 +4,21 @@
 
 ### Bug Fixes
 
+- **Group history bundles now encrypt with the `group-history` media type** —
+  `sendGroupHistory` encrypted the bundle file as `document` media (HKDF info
+  "WhatsApp Document Keys"), but the official client uses a dedicated
+  `group-history` media type whose HKDF info is literally "Group History"
+  (WhatsApp APK 2.26.45.71, `C14030jh.java` MmsType table). The recipient's
+  phone derives the bundle keys with "Group History", so the bot's file
+  decrypted to garbage, the SHA-256 check failed and the bundle was silently
+  dropped — and the phone only creates the history notice after a successful
+  import, so no notice from the bot ever appeared (the server still acked the
+  send, and WhatsApp Web showed the raw notice). `MEDIA_HKDF_KEY_MAPPING` /
+  `MEDIA_PATH_MAP` gained a `group-history` entry, `hkdfInfoKey` returns the
+  literal "Group History" for it, and `sendGroupHistory` now encrypts and
+  uploads with that type. Nothing else in the bundle changed (Ft1 encoding,
+  bundle/notice proto fields and metadata were already correct).
+
 - **Group member tag / role changes (`modify`) now emit `group-participants.update`** —
   the `w:g2` `modify` notification (member tag / admin-role change, confirmed
   as a recognised action in the official app's GroupNotificationHandler —

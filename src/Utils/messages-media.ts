@@ -49,6 +49,14 @@ const getImageProcessingLibrary = async () => {
 }
 
 export const hkdfInfoKey = (type: MediaType) => {
+	if (type === 'group-history') {
+		// The official client encrypts group-history bundles with the literal
+		// HKDF info "Group History" (WhatsApp APK 2.26.45.71, MmsType table
+		// C14030jh.java: "group-history", "Group History", 117, "GROUP_HISTORY"),
+		// NOT the usual "WhatsApp <X> Keys" pattern — so it is returned verbatim
+		// from MEDIA_HKDF_KEY_MAPPING instead of going through the template.
+		return MEDIA_HKDF_KEY_MAPPING[type]
+	}
 	const hkdfInfo = MEDIA_HKDF_KEY_MAPPING[type]
 	return `WhatsApp ${hkdfInfo} Keys`
 }
