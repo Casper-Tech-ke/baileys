@@ -35,6 +35,7 @@ import {
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
+	isViewOnceMessage,
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
@@ -111,6 +112,36 @@ import {
 	USERNAME_SOURCE,
 	type UsernameQueryIds
 } from './username.js'
+
+/**
+ * Whether a device JID is one of our own devices. A LID device is compared with
+ * our LID and any other device with our PN: areJidsSameUser compares only the
+ * user part, and a PN can share its digits with our LID.
+ */
+export const isOwnDeviceJid = (jid: string, meId: string, meLid: string | undefined) =>
+	isLidUser(jid) || isHostedLidUser(jid) ? !!meLid && areJidsSameUser(jid, meLid) : areJidsSameUser(jid, meId)
+
+/**
+ * Stanza addressing for a resend to a single device (a retry). A resend to one
+ * of our own devices must name the chat as `recipient`; that device is
+ * addressed by LID as well as by PN, as handleReceipt already assumes.
+ */
+export const buildRetryResendAddressing = (
+	destinationJid: string,
+	participantJid: string,
+	meId: string,
+	meLid: string | undefined
+): BinaryNodeAttributes => {
+	if (isJidGroup(destinationJid)) {
+		return { to: destinationJid, participant: participantJid }
+	}
+
+	if (isOwnDeviceJid(participantJid, meId, meLid)) {
+		return { to: participantJid, recipient: destinationJid }
+	}
+
+	return { to: participantJid }
+}
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -548,11 +579,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const meJid = jidNormalizedUser(authState.creds.me.id)
 
+		// On-demand history sync must carry privacy_sensitive: '1' or the
+		// server drops the request silently (upstream #2853).
+		const isHistorySync =
+			protocolMessage?.peerDataOperationRequestMessage?.peerDataOperationRequestType ===
+			proto.Message.PeerDataOperationRequestType.HISTORY_SYNC_ON_DEMAND
+
 		const msgId = await relayMessage(meJid, { protocolMessage }, {
 			additionalAttributes: {
 				category: 'peer',
 
-				push_priority: 'high_force'
+				push_priority: 'high_force',
+				...(isHistorySync ? { privacy_sensitive: '1' } : {})
 			},
 			additionalNodes: [
 				{
@@ -727,17 +765,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const extraAttrs: BinaryNodeAttributes = {}
 
-		if (participant) {
-			if (!isGroup && !isStatus) {
-				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
-			}
-
-			const { user, device } = jidDecode(participant.jid)!
-			devices.push({
-				user,
-				device,
-				jid: participant.jid
-			})
+		// a retry resend is encrypted once, in the dedicated retry block below;
+		// adding the participant to the regular fan-out would encrypt it twice (479)
+		if (participant && !isGroup && !isStatus) {
+			additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 		}
 
 		await authState.keys.transaction(async () => {
@@ -751,7 +782,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const bytes = encodeNewsletterMessage(patched as proto.IMessage)
 				binaryNodeContent.push({
 					tag: 'plaintext',
-					attrs: {},
+					attrs: mediaType ? { mediatype: mediaType } : {},
 					content: bytes
 				})
 				const stanza: BinaryNode = {
@@ -849,7 +880,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						//todo: revamp all this logic
 						// the goal is to follow with what I said above for each group, and instead of a true false map of ids, we can set an array full of those the app has already sent pkmsgs
 						senderKeyRecipients.push(deviceJid)
-						senderKeyMap[deviceJid] = true
 					}
 				}
 
@@ -870,6 +900,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 					participants.push(...result.nodes)
+					// A prepared SKDM is tracked per device; failed encryptions must be retried on the next send.
+					for (const { attrs } of result.nodes) {
+						if (attrs.jid) {
+							senderKeyMap[attrs.jid] = true
+						}
+					}
 				}
 
 				binaryNodeContent.push({
@@ -987,8 +1023,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			if (isRetryResend) {
-				const isParticipantLid = isLidUser(participant!.jid)
-				const isMe = areJidsSameUser(participant!.jid, isParticipantLid ? meLid : meId)
+				const isMe = isOwnDeviceJid(participant!.jid, meId, meLid)
 
 				let messageToSend = message
 				if (isGroupOrStatus) {
@@ -1026,6 +1061,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							}
 						})
 					: encodeWAMessage(messageToSend)
+
+				await assertSessions([participant!.jid])
 
 				const { type, ciphertext: encryptedContent } = await signalRepository.encryptMessage({
 					data: encodedMessageToSend,
@@ -1074,15 +1111,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// ensure the message is only sent to that person
 			// if a retry receipt is sent to everyone -- it'll fail decryption for everyone else who received the msg
 			if (participant) {
-				if (isJidGroup(destinationJid)) {
-					stanza.attrs.to = destinationJid
-					stanza.attrs.participant = participant.jid
-				} else if (areJidsSameUser(participant.jid, meId)) {
-					stanza.attrs.to = participant.jid
-					stanza.attrs.recipient = destinationJid
-				} else {
-					stanza.attrs.to = participant.jid
-				}
+				Object.assign(stanza.attrs, buildRetryResendAddressing(destinationJid, participant.jid, meId, meLid))
 			} else {
 				stanza.attrs.to = destinationJid
 			}
@@ -1095,6 +1124,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 
 				logger.debug({ jid }, 'adding device identity')
+			}
+
+			// WA Web marks view once sends at the stanza level too, not just in the
+			// protobuf wrapper. Adding it here also covers retry resends.
+			if (isViewOnceMessage(message)) {
+				;(stanza.content as BinaryNode[]).push({ tag: 'meta', attrs: { view_once: 'true' } })
 			}
 
 			if (

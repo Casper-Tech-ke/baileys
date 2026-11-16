@@ -76,6 +76,7 @@ import {
 	getBinaryNodeChildren,
 	getBinaryNodeChildString,
 	getBinaryNodeChildUInt,
+	isJidBroadcast,
 	isJidGroup,
 	isJidNewsletter,
 	isJidStatusBroadcast,
@@ -151,6 +152,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
 			useClones: false
 		})
+	const getRetryCount = async (key: string, defaultValue: number) => {
+		const retryCount = await msgRetryCache.get<number>(key)
+		if (retryCount === undefined || retryCount === null) {
+			return defaultValue
+		}
+
+		return Number.isFinite(retryCount) ? retryCount : maxMsgRetryCount
+	}
 	const callOfferCache =
 		config.callOfferCache ||
 		new NodeCache<WACallEvent>({
@@ -172,12 +181,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			throw new Boom('Not authenticated')
 		}
 
+		let ts = oldestMsgTimestamp
+		if (typeof ts === 'number' && ts > 1e11) {
+			ts = Math.floor(ts / 1000)
+		} else if (ts !== null && typeof ts === 'object' && 'toNumber' in ts) {
+			const num = (ts as Long).toNumber()
+			if (num > 1e11) {
+				ts = Math.floor(num / 1000)
+			}
+		}
+
 		const pdoMessage: proto.Message.IPeerDataOperationRequestMessage = {
 			historySyncOnDemandRequest: {
 				chatJid: oldestMsgKey.remoteJid,
 				oldestMsgFromMe: oldestMsgKey.fromMe,
 				oldestMsgId: oldestMsgKey.id,
-				oldestMsgTimestampMs: oldestMsgTimestamp,
+				oldestMsgTimestampMs: ts,
 				onDemandMsgCount: count
 			},
 			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.HISTORY_SYNC_ON_DEMAND
@@ -579,6 +598,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = msgKey.id!
 
 		if (messageRetryManager) {
+			const key = `${msgId}:${msgKey?.participant}`
+			const cachedRetryCount = await getRetryCount(key, 0)
+			messageRetryManager.restoreRetryCount(msgId, cachedRetryCount)
+
 			// Check if we've exceeded max retries using the new system
 			if (messageRetryManager.hasExceededMaxRetries(msgId)) {
 				logger.debug({ msgId }, 'reached retry limit with new retry manager, clearing')
@@ -590,15 +613,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const retryCount = messageRetryManager.incrementRetryCount(msgId)
 
 			// Use the new retry count for the rest of the logic
-			const key = `${msgId}:${msgKey?.participant}`
 			await msgRetryCache.set(key, retryCount)
 		} else {
 			// Fallback to old system
 			const key = `${msgId}:${msgKey?.participant}`
-			let retryCount = (await msgRetryCache.get<number>(key)) || 0
+			let retryCount = await getRetryCount(key, 0)
 			if (retryCount >= maxMsgRetryCount) {
 				logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
-				await msgRetryCache.del(key)
 				return
 			}
 
@@ -1146,8 +1167,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				break
-			case 'link_code_companion_reg':
+			case 'link_code_companion_reg': {
 				const linkCodeCompanionReg = getBinaryNodeChild(node, 'link_code_companion_reg')
+				// Server sends two notifications: immediately after companion_hello (stage=undefined,
+				// only link_code_pairing_ref) and after phone enters code (stage="primary_hello",
+				// all 3 crypto fields). Only process the latter.
+				if(linkCodeCompanionReg?.attrs?.stage !== 'primary_hello') break
 				const ref = toRequiredBuffer(getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_ref'))
 				const primaryIdentityPublicKey = toRequiredBuffer(
 					getBinaryNodeChildBuffer(linkCodeCompanionReg, 'primary_identity_pub')
@@ -1215,6 +1240,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				authState.creds.registered = true
 				ev.emit('creds.update', authState.creds)
 				break
+			}
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)
 				break
@@ -1320,14 +1346,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const willSendMessageAgain = async (id: string, participant: string) => {
 		const key = `${id}:${participant}`
-		const retryCount = (await msgRetryCache.get<number>(key)) || 0
+		const retryCount = await getRetryCount(key, 0)
 		return retryCount < maxMsgRetryCount
 	}
 
 	const updateSendMessageAgainCount = async (id: string, participant: string) => {
 		const key = `${id}:${participant}`
-		const newValue = ((await msgRetryCache.get<number>(key)) || 0) + 1
+		const newValue = (await getRetryCount(key, 0)) + 1
 		await msgRetryCache.set(key, newValue)
+	}
+
+	const acceptRetryIds = async (ids: string[], participant: string) => {
+		const accepted: string[] = []
+		for (const id of ids) {
+			if (id && (await willSendMessageAgain(id, participant))) {
+				accepted.push(id)
+				await updateSendMessageAgainCount(id, participant)
+			}
+		}
+
+		return accepted
 	}
 
 	const sendMessagesAgain = async (
@@ -1457,11 +1495,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		)
 
 		for (const [i, msg] of msgs.entries()) {
-			if (!ids[i]) continue
+			const id = ids[i]
+			if (!id) continue
 
-			if (msg && (await willSendMessageAgain(ids[i], participant))) {
-				await updateSendMessageAgainCount(ids[i], participant)
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+			if (msg) {
+				const msgRelayOpts: MessageRelayOptions = { messageId: id }
 
 				if (sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false
@@ -1474,7 +1512,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
 			} else {
-				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
+				logger.debug({ jid: key.remoteJid, id }, 'recv retry request, but message not available')
 			}
 		}
 	}
@@ -1532,9 +1570,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'messages.update',
 								ids.map(id => ({
 									key: { ...key, id },
-									update: { status, messageTimestamp: toNumber(+(attrs.t ?? 0)) }
+									update: { status }
 								}))
 							)
+							const timestamp = Number(attrs.t)
+							const timestampField =
+								status === proto.WebMessageInfo.Status.DELIVERY_ACK
+									? 'receiptTimestamp'
+									: status === proto.WebMessageInfo.Status.READ
+										? 'readTimestamp'
+										: status === proto.WebMessageInfo.Status.PLAYED
+											? 'playedTimestamp'
+											: undefined
+							if (
+								!isJidBroadcast(remoteJid) &&
+								!isJidBroadcast(attrs.from) &&
+								timestampField &&
+								Number.isSafeInteger(timestamp) &&
+								timestamp > 0
+							) {
+								ev.emit(
+									'message-receipt.update',
+									ids.map(id => ({
+										key: { ...key, id },
+										receipt: { userJid: jidNormalizedUser(attrs.from), [timestampField]: timestamp }
+									}))
+								)
+							}
 						}
 					}
 
@@ -1542,23 +1604,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
 						const retryNode = getBinaryNodeChild(node, 'retry')
-						if (ids[0] && key.participant && (await willSendMessageAgain(ids[0], key.participant))) {
-							if (key.fromMe) {
-								try {
-									await updateSendMessageAgainCount(ids[0], key.participant)
-									logger.debug({ attrs, key }, 'recv retry request')
-									await sendMessagesAgain(key, ids, retryNode!, node)
-								} catch (error: unknown) {
-									logger.error(
-										{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
-										'error in sending message again'
-									)
-								}
-							} else {
-								logger.info({ attrs, key }, 'recv retry for not fromMe message')
+						if (!key.fromMe) {
+							logger.info({ attrs, key }, 'recv retry for not fromMe message')
+							return
+						}
+
+						try {
+							const acceptedIds = key.participant ? await acceptRetryIds(ids, key.participant) : []
+							if (acceptedIds.length === 0) {
+								logger.info({ attrs, key }, 'will not send message again, as sent too many times')
+								return
 							}
-						} else {
-							logger.info({ attrs, key }, 'will not send message again, as sent too many times')
+
+							logger.debug({ attrs, key }, 'recv retry request')
+							await sendMessagesAgain(key, acceptedIds, retryNode!, node)
+						} catch (error: unknown) {
+							logger.error(
+								{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
+								'error in sending message again'
+							)
 						}
 					}
 				})
@@ -1713,6 +1777,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						await sendMessageAck(node)
 						// Don't return — fall through to upsertMessage so the stub is emitted
 					} else {
+						// A retry receipt only makes sense for a message from SOMEONE ELSE.
+						// An undecryptable `fromMe` message is the echo of our own account
+						// synced from another of our devices (sender fanout / deviceSentMessage),
+						// encrypted under the ORIGINATING device's session — not under a session
+						// this client holds. Asking for a resend is asking ourselves; the server
+						// answers with `<stream:error><ack/>` and tears the stream down (surfaces
+						// as a 500 "bad session" close, which it is not). Ack and move on: a retry
+						// for our own message cannot bring the content back, and keeping the
+						// connection alive is what matters.
+						if (msg.key.fromMe) {
+							logger.debug({ key: msg.key }, 'undecryptable fromMe message: acking without a retry receipt')
+							acked = true
+							return sendMessageAck(node)
+						}
+
 						// Skip retry for expired status messages (>24h old)
 						if (isJidStatusBroadcast(msg.key.remoteJid!)) {
 							const messageAge = unixTimestampSeconds() - toNumber(msg.messageTimestamp)
@@ -1967,12 +2046,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const handleChannelStatus = async (node: BinaryNode) => {
+		const status = decodeChannelStatus(node)
+		if (!status) {
+			try {
+				await sendMessageAck(node)
+			} catch (error) {
+				onUnexpectedError(error as Error, 'acking status stanza')
+			}
+			return
+		}
+
+		ev.buffer()
+		ev.emit('newsletter.status', status)
+		ev.flush()
+	}
+
 	const offlineNodeProcessor = makeOfflineNodeProcessor(
 		new Map<MessageType, (node: BinaryNode) => Promise<void>>([
 			['message', handleMessage],
 			['call', handleCall],
 			['receipt', handleReceipt],
-			['notification', handleNotification]
+			['notification', handleNotification],
+			['status', handleChannelStatus]
 		]),
 		{
 			isWsOpen: () => ws.isOpen,
@@ -2015,20 +2111,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	// channel statuses arrive as top-level <status> stanzas from a channel's
-	// @newsletter JID, not as messages — see Socket/channelStatus.ts. They
-	// are not acked: the socket delivers live and offline ones without it,
-	// and acking a newsletter status is not part of the protocol here.
-	const handleChannelStatus = async (node: BinaryNode) => {
-		const status = decodeChannelStatus(node)
-		if (!status) {
-			return
-		}
-
-		ev.buffer()
-		ev.emit('newsletter.status', status)
-		ev.flush()
-	}
-
+	// @newsletter JID, not as messages — see Socket/channelStatus.ts. A newsletter
+	// status is not acked: the socket delivers live and offline ones without it,
+	// and acking a newsletter status is not part of the protocol here. But a
+	// CONTACT's status can arrive the same way (top-level <status> instead of
+	// <message from="status@broadcast">) and that one MUST be acked, or the server
+	// ends the stream ~50 minutes later and redelivers it on reconnect
+	// (upstream #2883). decodeChannelStatus returns null for non-@newsletter
+	// senders, so a null here means "contact status: ack it".
 	// recv a message
 	ws.on('CB:message', async (node: BinaryNode) => {
 		await processNode('message', node, 'processing message', handleMessage)

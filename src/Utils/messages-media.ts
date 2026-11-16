@@ -10,7 +10,13 @@ import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
-import { DEFAULT_ORIGIN, MEDIA_HKDF_KEY_MAPPING, MEDIA_PATH_MAP, type MediaType } from '../Defaults'
+import {
+	DEFAULT_ORIGIN,
+	MEDIA_HKDF_KEY_MAPPING,
+	MEDIA_PATH_MAP,
+	type MediaType,
+	NEWSLETTER_MEDIA_PATH_MAP
+} from '../Defaults'
 import type {
 	BaileysEventMap,
 	DownloadableMessage,
@@ -605,10 +611,16 @@ export type MediaDownloadOptions = {
 export const getUrlFromDirectPath = (directPath: string, host: string = DEF_MEDIA_HOST) =>
 	`https://${host}${directPath}`
 
+// Some media messages (stickers, voice notes, images) carry a `url` on
+// `a.whatsapp.net`, which doesn't resolve. Their `directPath` is valid,
+// so it must go to the default host. (Upstream #2900.)
+const PLACEHOLDER_MEDIA_HOST = 'a.whatsapp.net'
+
 const extractHost = (url: string | null | undefined): string | undefined => {
 	if (!url) return undefined
 	try {
-		return new URL(url).host
+		const host = new URL(url).host
+		return host === PLACEHOLDER_MEDIA_HOST ? undefined : host
 	} catch {
 		return undefined
 	}
@@ -767,6 +779,10 @@ type MediaUploadResult = {
 	meta_hmac?: string
 	ts?: number
 	fbid?: number
+	thumbnail_info?: {
+		thumbnail_sha256?: string
+		thumbnail_direct_path?: string
+	}
 }
 
 export type UploadParams = {
@@ -913,11 +929,21 @@ export const getWAUploadToServer = (
 	{ customUploadHosts, fetchAgent, logger, options }: SocketConfig,
 	refreshMediaConn: (force: boolean) => Promise<MediaConnInfo>
 ): WAMediaUploadFunction => {
-	return async (filePath, { mediaType, fileEncSha256B64, timeoutMs }) => {
+	return async (filePath, { mediaType, fileEncSha256B64, timeoutMs, newsletter }) => {
 		// send a query JSON to obtain the url & auth token to upload our media
 		let uploadInfo = await refreshMediaConn(false)
 
-		let urls: { mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number } | undefined
+		let urls:
+			| {
+				mediaUrl: string
+				directPath: string
+				meta_hmac?: string
+				ts?: number
+				fbid?: number
+				thumbnailDirectPath?: string
+				thumbnailSha256?: string
+			}
+			| undefined
 		const hosts = [...customUploadHosts, ...uploadInfo.hosts]
 
 		fileEncSha256B64 = encodeBase64EncodedStringForUpload(fileEncSha256B64)
@@ -939,7 +965,15 @@ export const getWAUploadToServer = (
 			logger.debug(`uploading to "${hostname}"`)
 
 			const auth = encodeURIComponent(uploadInfo.auth)
-			const url = `https://${hostname}${MEDIA_PATH_MAP[mediaType]}/${fileEncSha256B64}?auth=${auth}&token=${fileEncSha256B64}`
+			const mediaPath = (newsletter ? NEWSLETTER_MEDIA_PATH_MAP[mediaType] : undefined) || MEDIA_PATH_MAP[mediaType]
+			let url = `https://${hostname}${mediaPath}/${fileEncSha256B64}?auth=${auth}&token=<redacted>`
+
+			if (newsletter) {
+				url += '&server_thumb_gen=1'
+				if (mediaType === 'video' || mediaType === 'gif' || mediaType === 'ptv') {
+					url += '&server_transcode=1'
+				}
+			}
 
 			let result: MediaUploadResult | undefined
 			try {
@@ -956,11 +990,13 @@ export const getWAUploadToServer = (
 
 				if (result?.url || result?.direct_path) {
 					urls = {
-						mediaUrl: result.url!,
+						mediaUrl: result.url || result.direct_path!,
 						directPath: result.direct_path!,
 						meta_hmac: result.meta_hmac,
 						fbid: result.fbid,
-						ts: result.ts
+						ts: result.ts,
+						thumbnailDirectPath: result.thumbnail_info?.thumbnail_direct_path,
+						thumbnailSha256: result.thumbnail_info?.thumbnail_sha256
 					}
 					break
 				} else {
@@ -984,14 +1020,19 @@ export const getWAUploadToServer = (
 	}
 }
 
-const getMediaRetryKey = (mediaKey: Buffer | Uint8Array) => {
+const getMediaRetryKey = (mediaKey: Uint8Array | string) => {
+	// accept the base64 form getMediaKeys accepts, e.g. a message persisted as JSON
+	if (typeof mediaKey === 'string') {
+		mediaKey = Buffer.from(mediaKey.replace('data:;base64,', ''), 'base64')
+	}
+
 	return hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
 }
 
 /**
  * Generate a binary node that will request the phone to re-upload the media & return the newly uploaded URL
  */
-export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Buffer | Uint8Array, meId: string) => {
+export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Uint8Array | string, meId: string) => {
 	const recp: proto.IServerErrorReceipt = { stanzaId: key.id }
 	const recpBuffer = proto.ServerErrorReceipt.encode(recp).finish()
 
@@ -1068,7 +1109,7 @@ export const decodeMediaRetryNode = (node: BinaryNode) => {
 
 export const decryptMediaRetryData = (
 	{ ciphertext, iv }: { ciphertext: Uint8Array; iv: Uint8Array },
-	mediaKey: Uint8Array,
+	mediaKey: Uint8Array | string,
 	msgId: string
 ) => {
 	const retryKey = getMediaRetryKey(mediaKey)

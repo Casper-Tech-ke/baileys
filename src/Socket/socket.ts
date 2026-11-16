@@ -448,7 +448,7 @@ export const makeSocket = (config: SocketConfig) => {
 		const keyEnc = noise.processHandshake(handshake, creds.noiseKey)
 
 		let node: proto.IClientPayload
-		if (!creds.me) {
+		if (!creds.me || (!!creds.pairingCode && !creds.registered)) {
 			node = generateRegistrationNode(creds, config)
 			logger.info({ node }, 'not logged in, attempting registration...')
 		} else {
@@ -816,7 +816,7 @@ export const makeSocket = (config: SocketConfig) => {
 						{
 							tag: 'link_code_pairing_nonce',
 							attrs: {},
-							content: '0'
+							content: Buffer.alloc(1)
 						}
 					]
 				}
@@ -862,7 +862,16 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 	})
 	ws.on('error', mapWebSocketError(end))
-	ws.on('close', () => void end(new Boom('Connection Terminated', { statusCode: DisconnectReason.connectionClosed })))
+	ws.on('close', (code?: number, reason?: Buffer | string) => {
+		// Surface the WebSocket close frame in the error itself: a 1000/1001 close
+		// is the server recycling the connection, 1006 is the TCP path dying
+		// without a frame, 1011/1012/1013 are server-side faults. Without this every
+		// close looks identical (428 "Connection Terminated") and operators cannot
+		// tell network drops from server-initiated recycling.
+		const reasonText = reason ? String(reason).trim() : ''
+		const detail = typeof code === 'number' ? ` (ws close ${code}${reasonText ? `: ${reasonText}` : ''})` : ''
+		void end(new Boom(`Connection Terminated${detail}`, { statusCode: DisconnectReason.connectionClosed }))
+	})
 	// the server terminated the connection
 	ws.on(
 		'CB:xmlstreamend',
@@ -1051,11 +1060,14 @@ export const makeSocket = (config: SocketConfig) => {
 	ev.on('creds.update', update => {
 		const name = update.me?.name
 		// if name has just been received
-		if (creds.me?.name !== name) {
+		// a partial update carries no `me`, which would otherwise send a nameless <presence/>.
+		// an attribute-less presence node is read as "available" by the server, which marks the
+		// account online and suppresses push notifications to the user's phone.
+		if (typeof name === 'string' && name.length > 0 && creds.me?.name !== name) {
 			logger.debug({ name }, 'updated pushName')
 			sendNode({
 				tag: 'presence',
-				attrs: { name: name! }
+				attrs: { name }
 			}).catch(err => {
 				logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
 			})

@@ -37,7 +37,7 @@ const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 
 const PLATFORM_MAP = {
 	'Mac OS': proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN,
-	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN32
+	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID
 }
 
 const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
@@ -244,7 +244,8 @@ export const configureSuccessfulPairing = (
 		account,
 		me: { id: jid!, name: bizName, lid },
 		signalIdentities: [...(signalIdentities || []), identity],
-		platform: platformNode?.attrs.name
+		platform: platformNode?.attrs.name,
+		registered: true
 	}
 
 	return {

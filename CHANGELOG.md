@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+### Upstream catch-up (WhiskeySockets/Baileys, 2026-11-16)
+
+Caught the fork up with upstream HEAD (bb0a87e) and 20 open upstream PRs.
+Nothing here changes the fork's own features; these are upstream fixes
+ported by hand (the fork is wolfsocket-lineage, so no cherry-pick applies
+cleanly).
+
+- **Media downloads no longer fail on the `a.whatsapp.net` placeholder host**
+  (upstream a5c3ee7 / PR #2900) — some media messages carry a `url` on
+  `a.whatsapp.net`, which does not resolve, while their `directPath` is
+  valid. `extractHost` now returns `undefined` for that host so the
+  download falls back to `mmg.whatsapp.net`.
+- **`WIN32` → `WIN_HYBRID`** in the connection validator (upstream 0af2386).
+- **Poll result snapshot message field 114 → 115** (PR #2887) — WAProto
+  `pollResultSnapshotMessageV3` moved; proto, encoder and Message decoder
+  updated.
+- **WhatsApp Web version bumped to `[2, 3000, 1054660005]`** (PR #2905) —
+  hardcoded fallback only; the bot fetches the live version at connect.
+- **History-sync requests now carry `privacy_sensitive: '1'`** (PR #2853,
+  adapted — the fork routes peer-data operations through `sendPeerMessage`,
+  so the attribute is added there) or the server drops the request
+  silently. `fetchMessageHistory` also normalises `oldestMsgTimestamp`
+  (ms → s).
+- **Pairing-code registration hardened** (PR #2872) — the link-code
+  companion-reg stanza is only processed at the `primary_hello` stage,
+  registration uses a proper nonce buffer, and a successful pairing now
+  sets `registered: true`.
+- **Undecryptable own messages are acked, not retried** (PR #2864) — stops
+  a `<stream:error><ack/>` teardown when the bot cannot decrypt its own
+  message.
+- **Socket close errors now include the close code/reason** (PR #2865).
+- **Presence is only sent when the account name actually changed**
+  (PR #2789) — stops a nameless `<presence/>` marking the account online.
+- **Auth state is written atomically** (PR #2855) — temp file + rename,
+  so a crash mid-write cannot corrupt `creds.json` and lose the session.
+- **Community metadata accepts `<community>` or `<group>`** (PR #2808)
+  with a clear error when neither is present.
+- **Buffered edits no longer clobber the upsert timestamp** (PR #2896).
+- **Message receipts no longer overwrite the send timestamp** (PR #2879) —
+  receipts now arrive as a proper `message-receipt.update` event with
+  receipt/read/played timestamps.
+- **View-once sends carry `<meta view_once="true"/>`** (PR #2837) — covers
+  retry resends too. This fixes *sending* view-once (`.toviewonce`); it
+  does not affect receiving others' view-once (`.vv`).
+- **Retry resends no longer double-encrypt** (PR #2898) — the participant
+  is no longer added to the regular fan-out, and sessions are asserted
+  before the dedicated retry encryption.
+- **Retry requests are charged once per accepted id** (PR #2892) — new
+  `acceptRetryIds` helper; not-from-me retry requests return early.
+- **Sender-key map is set only from keys actually produced** (PR #2891).
+- **Retry counts are restored, never lowered** (PR #2888) — new
+  `restoreRetryCount`; the fallback path no longer deletes the cache key
+  at the limit.
+- **Retry resends use LID-aware addressing** (PR #2856) — new
+  `isOwnDeviceJid` / `buildRetryResendAddressing`; our own device is
+  matched by LID, not just the user part.
+- **Media re-upload works for JSON-persisted messages** (PR #2835) —
+  media-retry keys accept a base64 string as well as a buffer, and an
+  expired link (403 with an expired `oe` signature) or a 404/410 now
+  triggers a re-upload instead of failing.
+- **Channel statuses are acked** (PR #2883, adapted) — a contact's status
+  stanza is now acked via `sendMessageAck` when it carries no newsletter
+  payload, or the server kills the stream ~50 minutes later. Newsletter
+  statuses stay un-acked (the fork's deliberate design). The offline node
+  processor now handles the `status` type.
+- **Newsletter media uploads use the newsletter paths** (PR #2434) —
+  `NEWSLETTER_MEDIA_PATH_MAP` (`/newsletter/newsletter-*`), server
+  thumbnail generation (`server_thumb_gen=1`) and transcoding for
+  video/gif/ptv, and the upload result returns `thumbnailDirectPath` /
+  `thumbnailSha256`; newsletter messages now carry those fields and omit
+  `url` (directPath only).
+
 ### Bug Fixes
 
 - **Group history bundles now encrypt with the `group-history` media type** —
