@@ -39,6 +39,7 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	shouldIncludeBizBinaryNode,
 	unixTimestampSeconds
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
@@ -59,6 +60,7 @@ import {
 	type FullJid,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	getBizBinaryNode,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBot,
@@ -728,7 +730,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
+			statusJidList,
+			addBizAttributes
 		}: MessageRelayOptions
 	) => {
 		const meId = assertMeId(authState.creds)
@@ -1190,8 +1193,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 			}
 
+			let alreadyHasBizNode = false
 			if (additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
+				alreadyHasBizNode = !addBizAttributes && additionalNodes.some(node => node.tag === 'biz')
+			}
+			const normalizedMsg = normalizeMessageContent(message)
+			// Biz binary node: required for buttons/list/template/native-flow
+			// messages to render (and for the secureMetaServiceLabel biz shelf).
+			if (
+				normalizedMsg &&
+				((!alreadyHasBizNode && shouldIncludeBizBinaryNode(normalizedMsg)) || addBizAttributes)
+			) {
+				;(stanza.content as BinaryNode[]).push(getBizBinaryNode(normalizedMsg))
 			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
@@ -1645,6 +1659,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							event_type: 'creation'
 						}
 					})
+				}
+
+				// Interactive messages in 1:1 chats also carry the `bot` node
+				// (gifted-btns does the same for private chats).
+				if (
+					!isJidGroup(jid) &&
+					('nativeFlow' in content || 'interactiveButtons' in content)
+				) {
+					additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } })
 				}
 
 				await relayMessage(jid, fullMsg.message!, {

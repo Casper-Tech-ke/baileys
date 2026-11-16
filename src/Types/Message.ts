@@ -244,10 +244,94 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 	productImage: WAMediaUpload
 }
 
+export type NativeFlowSection = {
+	/** Section heading shown above its rows. */
+	title?: string
+	rows: {
+		id: string
+		title: string
+		description?: string
+		header?: string
+	}[]
+}
+
+/**
+ * One native-flow button, as authored by the caller.
+ * Shorthand keys map to a native-flow row: `id` -> quick_reply,
+ * `copy` -> cta_copy, `url` -> cta_url, `call` -> cta_call,
+ * `sections` -> single_select. `text`/`buttonText` is the display text,
+ * `icon` is upper-cased automatically, `useWebview` opens a cta_url in a
+ * webview instead of the browser.
+ */
+export type NativeFlowButtonShorthand = {
+	id?: string
+	copy?: string
+	url?: string
+	call?: string
+	sections?: NativeFlowSection[]
+	text?: string
+	buttonText?: string
+	icon?: string
+	useWebview?: boolean
+}
+
+/** An already-shaped native-flow row, passed through untouched. */
+export type NativeFlowButtonRow = {
+	name: string
+	buttonParamsJson: string
+}
+
+export type NativeFlowButton = NativeFlowButtonShorthand | NativeFlowButtonRow
+
 export type AnyRegularMessageContent = (
 	| ({
 			text: string
 			linkPreview?: WAUrlInfo | null
+	  } & Mentionable &
+			Contextable &
+			Editable)
+	| ({
+			/** Native-flow interactive buttons (cta_url, cta_copy, quick_reply, single_select, cta_call). */
+			nativeFlow?: NativeFlowButton[] | { buttons: NativeFlowButton[] }
+			/** Alias for `nativeFlow` (gifted-btns style). */
+			interactiveButtons?: NativeFlowButton[] | { buttons: NativeFlowButton[] }
+			/** Body text of the interactive message. */
+			text?: string
+			/** Caption used as the body when a media header is attached. */
+			caption?: string
+			/** Footer text. */
+			footer?: string
+			/** Header title (media header only). */
+			title?: string
+			/** Header subtitle (media header only). */
+			subtitle?: string
+			/** Audio footer (voice note attached as the footer). */
+			audioFooter?: WAMediaUpload
+			/** Business JID for a collection (catalog) header. */
+			bizJid?: string
+			/** Storefront surface for a shop header. */
+			shopSurface?: string
+			/** Template / collection id. */
+			id?: string
+			/** Limited-time-offer banner text. */
+			offerText?: string
+			offerUrl?: string
+			offerCode?: string
+			offerExpiration?: number
+			/** Bottom-sheet entry point text. */
+			optionText?: string
+			optionTitle?: string
+			/** Media for the interactive header (image / video / document / location / product). `audio` is NOT valid here — it is rejected with a Boom 400. */
+			image?: WAMediaUpload
+			video?: WAMediaUpload
+			document?: WAMediaUpload
+			location?: WALocationMessage
+			product?: WASendableProduct
+			audio?: WAMediaUpload
+			ptt?: boolean
+			seconds?: number
+			jpegThumbnail?: string
+			mimetype?: string
 	  } & Mentionable &
 			Contextable &
 			Editable)
@@ -339,6 +423,8 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	/** additional attributes to add to the WA binary node */
 	additionalAttributes?: { [_: string]: string }
 	additionalNodes?: BinaryNode[]
+	/** force-attach the biz binary node (secureMetaServiceLabel) */
+	addBizAttributes?: boolean
 	/** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
 	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */

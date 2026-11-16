@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Native interactive buttons (2026-11-16)
+
+Baileys can now send real interactive messages with native-flow buttons —
+no third-party plugin needed. The `gifted-btns` npm package (mauricegift)
+was checked as the reference for the mechanism, but its main file is
+heavily obfuscated with an anti-tamper check, so it is NOT installed or run;
+the same capability is implemented natively here, following the proven
+chaeulso/baileys reference implementation.
+
+- **Authoring:** `sock.sendMessage(jid, { text, footer, interactiveButtons: [...] })`
+  or the reference-style `nativeFlow` field (same shape). `interactiveButtons`
+  is an alias for `nativeFlow`.
+- **Button kinds:** `{ id }` quick-reply, `{ copy }` copy-to-clipboard
+  (`cta_copy`), `{ url }` open link (`cta_url`, `useWebview` for an in-app
+  webview), `{ call }` dial (`cta_call`), `{ sections }` option sheet
+  (`single_select`), plus already-shaped `{ name, buttonParamsJson }` rows
+  passed through untouched. `text`/`buttonText` is the display text,
+  `icon` is upper-cased automatically. `offerText` (+ `offerUrl`,
+  `offerCode`, `offerExpiration`) adds a limited-time-offer banner and
+  `optionText` (+ `optionTitle`) a bottom sheet.
+- **Media headers:** `image` / `video` / `document` / `location` /
+  `product` with a `caption` become the interactive header; any other media
+  (e.g. audio) is rejected with `Invalid media type for interactive message
+  header` (Boom 400). `audioFooter` attaches a voice-note footer, `bizJid`
+  / `shopSurface` add collection / storefront headers.
+- **Wire:** `relayMessage` auto-injects the `<biz>` binary node (mixed
+  native-flow v9, first-party-flow v2, `order_details` for
+  `review_and_pay`, product-list for `listMessage`, quality-control
+  always) whenever the message is an interactive shape, unless one is
+  already present; `addBizAttributes` on the relay options forces it
+  (secureMetaServiceLabel). `sendMessage` also adds the `bot` node
+  (`biz_bot: '1'`) for interactive messages in 1:1 chats; groups get only
+  the `biz` node.
+- **API:** `prepareNativeFlowButtons`, `hasValidInteractiveHeader` and
+  `shouldIncludeBizBinaryNode` (Utils), `getBizBinaryNode` (WABinary), and
+  the `NativeFlowButton` / `NativeFlowButtonShorthand` /
+  `NativeFlowButtonRow` / `NativeFlowSection` types.
+
 ### Upstream catch-up (WhiskeySockets/Baileys, 2026-11-16)
 
 Caught the fork up with upstream HEAD (bb0a87e) and 20 open upstream PRs.

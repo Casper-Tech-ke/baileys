@@ -20,6 +20,8 @@ import type {
 	MessageGenerationOptionsFromContent,
 	MessageUserReceipt,
 	MessageWithContextInfo,
+	NativeFlowButton,
+	NativeFlowButtonShorthand,
 	WAMediaUpload,
 	WAMessage,
 	WAMessageContent,
@@ -414,6 +416,136 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 	return typeof obj === 'object' && obj !== null && key in obj && (obj as any)[key] !== null
 }
 
+/**
+ * Build the native-flow button array for an interactiveMessage.
+ *
+ * Each entry of `nativeFlow` is either a shorthand button ({ id }, { copy },
+ * { url }, { call }, { sections }) or an already-shaped native-flow row
+ * which is passed through untouched.
+ *
+ * Optional top-level extras:
+ * - offerText (+ offerUrl, offerCode, offerExpiration) -> limited_time_offer
+ * - optionText (+ optionTitle) -> bottom_sheet
+ */
+export const prepareNativeFlowButtons = (
+	message: {
+		nativeFlow: NativeFlowButton[] | { buttons: NativeFlowButton[] }
+		offerText?: string
+		offerUrl?: string
+		offerCode?: string
+		offerExpiration?: number
+		optionText?: string
+		optionTitle?: string
+	}
+): proto.Message.InteractiveMessage.INativeFlowMessage => {
+	const buttons = message.nativeFlow
+	const isButtonsFieldArray = Array.isArray(buttons)
+	const correctedField = isButtonsFieldArray ? buttons : buttons.buttons
+	const messageParamsJson: { limited_time_offer?: unknown; bottom_sheet?: unknown } = {}
+	if (hasOptionalProperty(message, 'offerText') && !!message.offerText) {
+		Object.assign(messageParamsJson, {
+			limited_time_offer: {
+				text: message.offerText,
+				url: message.offerUrl,
+				copy_code: message.offerCode,
+				expiration_time: message.offerExpiration
+			}
+		})
+	}
+	if (hasOptionalProperty(message, 'optionText') && !!message.optionText) {
+		Object.assign(messageParamsJson, {
+			bottom_sheet: {
+				in_thread_buttons_limit: 1,
+				divider_indices: Array.from({ length: correctedField.length }, (_, index) => index),
+				list_title: message.optionTitle || '📄 Select Options',
+				button_title: message.optionText
+			}
+		})
+	}
+	return {
+		buttons: correctedField.map(button => {
+			const shorthand = button as NativeFlowButtonShorthand
+			const buttonText = shorthand.text || shorthand.buttonText
+			const buttonIcon = shorthand.icon?.toUpperCase()
+			if (hasOptionalProperty(button, 'id') && !!button.id) {
+				return {
+					name: 'quick_reply',
+					buttonParamsJson: JSON.stringify({
+						display_text: buttonText || '👉🏻 Click',
+						id: button.id,
+						icon: buttonIcon
+					})
+				}
+			} else if (hasOptionalProperty(button, 'copy') && !!button.copy) {
+				return {
+					name: 'cta_copy',
+					buttonParamsJson: JSON.stringify({
+						display_text: buttonText || '📋 Copy',
+						copy_code: button.copy,
+						icon: buttonIcon
+					})
+				}
+			} else if (hasOptionalProperty(button, 'url') && !!button.url) {
+				return {
+					name: 'cta_url',
+					buttonParamsJson: JSON.stringify({
+						display_text: buttonText || '🌐 Visit',
+						url: button.url,
+						merchant_url: button.url,
+						webview_interaction: button.useWebview,
+						icon: buttonIcon
+					})
+				}
+			} else if (hasOptionalProperty(button, 'call') && !!button.call) {
+				return {
+					name: 'cta_call',
+					buttonParamsJson: JSON.stringify({
+						display_text: buttonText || '📞 Call',
+						phone_number: button.call,
+						icon: buttonIcon
+					})
+				}
+			} else if (hasOptionalProperty(button, 'sections') && !!button.sections) {
+				return {
+					name: 'single_select',
+					buttonParamsJson: JSON.stringify({
+						title: buttonText || '📋 Select',
+						sections: button.sections,
+						icon: buttonIcon
+					})
+				}
+			}
+			return button as proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton
+		}),
+		messageParamsJson: JSON.stringify(messageParamsJson)
+	}
+}
+
+/** Media types that are valid at the top of an interactiveMessage header. */
+export const hasValidInteractiveHeader = (message: WAMessageContent): boolean => {
+	return !!(
+		message.imageMessage ||
+		message.videoMessage ||
+		message.documentMessage ||
+		message.productMessage ||
+		message.locationMessage
+	)
+}
+
+/**
+ * Determines whether a message needs a biz binary node on the outgoing stanza.
+ * Interactive shapes (buttons/list/template/native-flow) are rejected or
+ * rendered stripped without it.
+ */
+export const shouldIncludeBizBinaryNode = (message: WAMessageContent): boolean => {
+	return !!(
+		message.buttonsMessage ||
+		message.listMessage ||
+		message.templateMessage ||
+		(message.interactiveMessage && message.interactiveMessage.nativeFlowMessage)
+	)
+}
+
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
 	options: MessageContentGenerationOptions
@@ -634,7 +766,68 @@ export const generateWAMessageContent = async (
 			}
 		}
 	} else {
-		m = await prepareWAMessageMedia(message, options)
+		m = await prepareWAMessageMedia(message as AnyMediaMessageContent, options)
+	}
+
+	// Interactive messages: native-flow buttons wrap the content built above
+	// (a text body, or a prepared media header). `interactiveButtons` is the
+	// gifted-btns-style alias for `nativeFlow`. This is a second stage, not
+	// another branch of the chain above: `{ text, nativeFlow }` must reach
+	// here, and the text branch above would swallow it first.
+	if ('nativeFlow' in message || 'interactiveButtons' in message) {
+		const flowButtons = message.nativeFlow ?? message.interactiveButtons
+		if (!flowButtons) {
+			throw new Boom('nativeFlow buttons are required', { statusCode: 400 })
+		}
+		const flowMessage = { ...message, nativeFlow: flowButtons }
+		const interactiveMessage: proto.Message.IInteractiveMessage = {
+			nativeFlowMessage: prepareNativeFlowButtons(flowMessage)
+		}
+		if (hasOptionalProperty(message, 'bizJid')) {
+			interactiveMessage.collectionMessage = {
+				bizJid: message.bizJid,
+				id: message.id,
+				messageVersion: 1
+			}
+		} else if (hasOptionalProperty(message, 'shopSurface')) {
+			interactiveMessage.shopStorefrontMessage = {
+				surface: message.shopSurface as unknown as proto.Message.InteractiveMessage.ShopMessage.Surface,
+				id: message.id,
+				messageVersion: 1
+			}
+		}
+		if (hasOptionalProperty(message, 'text')) {
+			interactiveMessage.body = { text: message.text }
+		} else {
+			if (hasOptionalProperty(message, 'caption')) {
+				const isValidHeader = hasValidInteractiveHeader(m)
+				if (!isValidHeader) {
+					throw new Boom('Invalid media type for interactive message header', { statusCode: 400 })
+				}
+				interactiveMessage.header = {
+					title: message.title || '',
+					subtitle: message.subtitle || '',
+					hasMediaAttachment: isValidHeader
+				}
+				interactiveMessage.body = { text: message.caption }
+			}
+			// NOTE: the reference also sets interactiveMessage.jpegThumbnail
+			// from message.thumbnail, but neither proto defines that field on
+			// InteractiveMessage, so it is dropped on encode — omitted here.
+			if (interactiveMessage.header) {
+				Object.assign(interactiveMessage.header, m)
+			}
+		}
+		if (hasOptionalProperty(message, 'audioFooter')) {
+			const { audioMessage } = await prepareWAMessageMedia({ audio: message.audioFooter }, options)
+			interactiveMessage.footer = {
+				audioMessage,
+				hasMediaAttachment: true
+			}
+		} else if (hasOptionalProperty(message, 'footer')) {
+			interactiveMessage.footer = { text: message.footer }
+		}
+		m = { interactiveMessage }
 	}
 
 	if (hasOptionalProperty(message, 'viewOnce') && !!message.viewOnce) {
