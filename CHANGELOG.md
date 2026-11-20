@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fresh sessions resolve on their own (2026-11-20)
+
+- **Fixed:** chat actions that need synced state (archive, pin, clear, status audience) now work on a freshly connected session without a manual step.
+
 ### Privacy, pins and statuses fixed (2026-11-20)
 
 Several account and chat controls that did not work are now fixed:
