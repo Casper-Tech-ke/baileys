@@ -145,6 +145,37 @@ export const buildRetryResendAddressing = (
 	return { to: participantJid }
 }
 
+/**
+ * Add the close-friends audience marker to status content.
+ * Any contextInfo already on the content (e.g. mentions) is kept.
+ * Exported for testing; the socket wrapper is
+ * sendCloseFriendsStatus.
+ */
+export const closeFriendsStatusContent = (content: AnyMessageContent): AnyMessageContent => {
+	const existing = 'contextInfo' in content ? content.contextInfo : undefined
+	return {
+		...content,
+		contextInfo: {
+			...existing,
+			statusAudienceMetadata: {
+				audienceType: proto.ContextInfo.StatusAudienceMetadata.AudienceType.CLOSE_FRIENDS
+			}
+		}
+	} as AnyMessageContent
+}
+
+/**
+ * Build the receipt key used to mark a status as viewed.
+ * The key is read as someone else's message (fromMe: false) with
+ * the status author as participant.
+ * Exported for testing; the socket wrapper is markStatusViewed.
+ */
+export const buildStatusViewKey = (key: WAMessageKey, participant: string | undefined): WAMessageKey => ({
+	...key,
+	fromMe: false,
+	participant
+})
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -1430,6 +1461,180 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return fullMsg
 	}
 
+	const sendMessage = async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
+		const userJid = authState.creds.me!.id
+		if (
+			typeof content === 'object' &&
+			'disappearingMessagesInChat' in content &&
+			typeof content['disappearingMessagesInChat'] !== 'undefined' &&
+			isJidGroup(jid)
+		) {
+			const { disappearingMessagesInChat } = content
+			const value =
+				typeof disappearingMessagesInChat === 'boolean'
+					? disappearingMessagesInChat
+						? WA_DEFAULT_EPHEMERAL
+						: 0
+					: disappearingMessagesInChat
+			await groupToggleEphemeral(jid, value)
+		} else {
+			const fullMsg = await generateWAMessage(jid, content, {
+				logger,
+				userJid,
+				getUrlInfo: text =>
+					getUrlInfo(text, {
+						thumbnailWidth: linkPreviewImageThumbnailWidth,
+						fetchOpts: {
+							timeout: 3_000,
+							...(httpRequestOptions || {})
+						},
+						logger,
+						uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
+					}),
+				//TODO: CACHE
+				getProfilePicUrl: sock.profilePictureUrl,
+				getCallLink: sock.createCallLink,
+				upload: waUploadToServer,
+				mediaCache: config.mediaCache,
+				options: config.options,
+				messageId: generateMessageIDV2(sock.user?.id),
+				...options
+			})
+			const isEventMsg = 'event' in content && !!content.event
+			const isDeleteMsg = 'delete' in content && !!content.delete
+			const isEditMsg = 'edit' in content && !!content.edit
+			const isPinMsg = 'pin' in content && !!content.pin
+			const isPollMessage = 'poll' in content && !!content.poll
+			const additionalAttributes: BinaryNodeAttributes = {}
+			const additionalNodes: BinaryNode[] = []
+			// required for delete
+			if (isDeleteMsg) {
+				// if the chat is a group, and I am not the author, then delete the message as an admin
+				if (isJidGroup(content.delete?.remoteJid as string) && !content.delete?.fromMe) {
+					additionalAttributes.edit = '8'
+				} else {
+					additionalAttributes.edit = '7'
+				}
+			} else if (isEditMsg) {
+				additionalAttributes.edit = '1'
+			} else if (isPinMsg) {
+				additionalAttributes.edit = '2'
+			} else if (isPollMessage) {
+				additionalNodes.push({
+					tag: 'meta',
+					attrs: {
+						polltype: 'creation'
+					}
+				})
+			} else if (isEventMsg) {
+				additionalNodes.push({
+					tag: 'meta',
+					attrs: {
+						event_type: 'creation'
+					}
+				})
+			}
+
+			// Interactive messages in 1:1 chats also carry the `bot` node
+			// (gifted-btns does the same for private chats).
+			if (
+				!isJidGroup(jid) &&
+				('nativeFlow' in content || 'interactiveButtons' in content)
+			) {
+				additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } })
+			}
+
+			await relayMessage(jid, fullMsg.message!, {
+				messageId: fullMsg.key.id!,
+				useCachedGroupMetadata: options.useCachedGroupMetadata,
+				additionalAttributes,
+				statusJidList: options.statusJidList,
+				additionalNodes
+			})
+			if (config.emitOwnEvents) {
+				process.nextTick(async () => {
+					await messageMutex.mutex(() => upsertMessage(fullMsg, 'append'))
+				})
+			}
+
+			return fullMsg
+		}
+	}
+
+	/**
+	 * Pin a message in a chat for everyone, for `duration` seconds.
+	 * The server accepts 24 hours (86400), 7 days (604800) or
+	 * 30 days (2592000); defaults to 24 hours.
+	 */
+	const pinMessage = async (
+		jid: string,
+		key: WAMessageKey,
+		duration: 86400 | 604800 | 2592000 = 86400
+	) => {
+		return sendMessage(jid, { pin: key, type: proto.PinInChat.Type.PIN_FOR_ALL, time: duration })
+	}
+
+	/** Remove a pin from a message in a chat. */
+	const unpinMessage = async (jid: string, key: WAMessageKey) => {
+		return sendMessage(jid, { pin: key, type: proto.PinInChat.Type.UNPIN_FOR_ALL })
+	}
+
+	/**
+	 * Post a personal status (story) visible to your contacts.
+	 * Same content shapes as sendMessage: { text }, { image, caption },
+	 * { video, caption }, { audio, ptt }, { sticker }, etc.
+	 */
+	const sendPersonalStatus = async (content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
+		return sendMessage('status@broadcast', content, options)
+	}
+
+
+	/**
+	 * Post a personal status visible only to the given close friends.
+	 * The status carries the close-friends audience marker and is
+	 * fanned out only to `closeFriendJids`.
+	 */
+	const sendCloseFriendsStatus = async (
+		content: AnyMessageContent,
+		closeFriendJids: string[],
+		options: MiscMessageGenerationOptions = {}
+	) => {
+		return sendMessage('status@broadcast', closeFriendsStatusContent(content), {
+			...options,
+			statusJidList: closeFriendJids
+		})
+	}
+
+
+	/**
+	 * Mark a status as viewed. `key` is the status message key —
+	 * group status keys carry the group JID, personal status keys
+	 * carry 'status@broadcast'. `participant` is the status author
+	 * and defaults to your own JID.
+	 */
+	const markStatusViewed = async (key: WAMessageKey, participant?: string) => {
+		await readMessages([buildStatusViewKey(key, participant ?? authState.creds.me?.id)])
+	}
+
+	/**
+	 * React to a status (group or personal). `jid` is the group JID
+	 * for a group status, or 'status@broadcast' for a personal status
+	 * (pass your own JID in `statusJidList` for personal statuses,
+	 * as the reaction is fanned out to that list).
+	 */
+	const reactToStatus = async (
+		jid: string,
+		key: WAMessageKey,
+		emoji: string,
+		statusJidList?: string[]
+	) => {
+		return sendMessage(
+			jid,
+			{ react: { key, text: emoji } },
+			statusJidList ? { statusJidList } : {}
+		)
+	}
+
 	return {
 		...sock,
 		userDevicesCache,
@@ -1463,6 +1668,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				},
 				options
 			),
+		pinMessage,
+		unpinMessage,
+		sendPersonalStatus,
+		sendCloseFriendsStatus,
+		markStatusViewed,
+		reactToStatus,
 		sendGroupHistory: (
 			jid: string,
 			receivers: string[],
@@ -1587,104 +1798,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			return message
 		},
-		sendMessage: async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
-			const userJid = authState.creds.me!.id
-			if (
-				typeof content === 'object' &&
-				'disappearingMessagesInChat' in content &&
-				typeof content['disappearingMessagesInChat'] !== 'undefined' &&
-				isJidGroup(jid)
-			) {
-				const { disappearingMessagesInChat } = content
-				const value =
-					typeof disappearingMessagesInChat === 'boolean'
-						? disappearingMessagesInChat
-							? WA_DEFAULT_EPHEMERAL
-							: 0
-						: disappearingMessagesInChat
-				await groupToggleEphemeral(jid, value)
-			} else {
-				const fullMsg = await generateWAMessage(jid, content, {
-					logger,
-					userJid,
-					getUrlInfo: text =>
-						getUrlInfo(text, {
-							thumbnailWidth: linkPreviewImageThumbnailWidth,
-							fetchOpts: {
-								timeout: 3_000,
-								...(httpRequestOptions || {})
-							},
-							logger,
-							uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
-						}),
-					//TODO: CACHE
-					getProfilePicUrl: sock.profilePictureUrl,
-					getCallLink: sock.createCallLink,
-					upload: waUploadToServer,
-					mediaCache: config.mediaCache,
-					options: config.options,
-					messageId: generateMessageIDV2(sock.user?.id),
-					...options
-				})
-				const isEventMsg = 'event' in content && !!content.event
-				const isDeleteMsg = 'delete' in content && !!content.delete
-				const isEditMsg = 'edit' in content && !!content.edit
-				const isPinMsg = 'pin' in content && !!content.pin
-				const isPollMessage = 'poll' in content && !!content.poll
-				const additionalAttributes: BinaryNodeAttributes = {}
-				const additionalNodes: BinaryNode[] = []
-				// required for delete
-				if (isDeleteMsg) {
-					// if the chat is a group, and I am not the author, then delete the message as an admin
-					if (isJidGroup(content.delete?.remoteJid as string) && !content.delete?.fromMe) {
-						additionalAttributes.edit = '8'
-					} else {
-						additionalAttributes.edit = '7'
-					}
-				} else if (isEditMsg) {
-					additionalAttributes.edit = '1'
-				} else if (isPinMsg) {
-					additionalAttributes.edit = '2'
-				} else if (isPollMessage) {
-					additionalNodes.push({
-						tag: 'meta',
-						attrs: {
-							polltype: 'creation'
-						}
-					})
-				} else if (isEventMsg) {
-					additionalNodes.push({
-						tag: 'meta',
-						attrs: {
-							event_type: 'creation'
-						}
-					})
-				}
-
-				// Interactive messages in 1:1 chats also carry the `bot` node
-				// (gifted-btns does the same for private chats).
-				if (
-					!isJidGroup(jid) &&
-					('nativeFlow' in content || 'interactiveButtons' in content)
-				) {
-					additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } })
-				}
-
-				await relayMessage(jid, fullMsg.message!, {
-					messageId: fullMsg.key.id!,
-					useCachedGroupMetadata: options.useCachedGroupMetadata,
-					additionalAttributes,
-					statusJidList: options.statusJidList,
-					additionalNodes
-				})
-				if (config.emitOwnEvents) {
-					process.nextTick(async () => {
-						await messageMutex.mutex(() => upsertMessage(fullMsg, 'append'))
-					})
-				}
-
-				return fullMsg
-			}
-		}
+		sendMessage,
 	}
 }

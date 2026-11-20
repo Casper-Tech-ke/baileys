@@ -11,6 +11,7 @@ import type {
 	LTHashState,
 	MessageUpsertType,
 	PresenceData,
+	PrivacySettingsUpdate,
 	SocketConfig,
 	WABusinessHoursConfig,
 	WABusinessProfile,
@@ -78,6 +79,59 @@ export const buildProfilePictureQueryContent = (
 
 	return [picture]
 }
+
+/**
+ * Change several privacy settings at once, as a list of
+ * (category, value) pairs built from a PrivacySettingsUpdate.
+ * Exported for testing; the socket wrapper is updatePrivacySettings.
+ */
+export const privacySettingsToCategories = (settings: PrivacySettingsUpdate) => {
+	const categories: { name: string; value: string }[] = []
+	if (settings.call !== undefined) {
+		categories.push({ name: 'calladd', value: settings.call })
+	}
+	if (settings.status !== undefined) {
+		categories.push({ name: 'status', value: settings.status })
+	}
+	if (settings.last !== undefined) {
+		categories.push({ name: 'last', value: settings.last })
+	}
+	if (settings.online !== undefined) {
+		categories.push({ name: 'online', value: settings.online })
+	}
+	if (settings.profile !== undefined) {
+		categories.push({ name: 'profile', value: settings.profile })
+	}
+	if (settings.groupadd !== undefined) {
+		categories.push({ name: 'groupadd', value: settings.groupadd })
+	}
+	if (settings.readreceipts !== undefined) {
+		categories.push({ name: 'readreceipts', value: settings.readreceipts })
+	}
+	if (settings.messages !== undefined) {
+		categories.push({ name: 'messages', value: settings.messages })
+	}
+	return categories
+}
+
+/**
+ * Build the patch that changes the default audience for new
+ * statuses. Mode 2 shares with contacts, mode 3 shares with
+ * close friends only. ALLOW_LIST (0) and DENY_LIST (1) take the
+ * JIDs the list applies to in `userJids`.
+ * Exported for testing; the socket wrapper is
+ * updateStatusDistributionMode.
+ */
+export const statusDistributionModePatch = (
+	mode: proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode,
+	userJids?: string[]
+): WAPatchCreate => ({
+	syncAction: { statusPrivacy: { mode, userJid: userJids } },
+	index: ['status_privacy'],
+	type: 'critical_block',
+	apiVersion: 1,
+	operation: proto.SyncdMutation.SyncdOperation.SET
+})
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
@@ -229,6 +283,28 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const updateGroupsAddPrivacy = async (value: WAPrivacyGroupAddValue) => {
 		await privacyQuery('groupadd', value)
+	}
+
+	/**
+	 * Change several privacy settings at once. Only the categories
+	 * present in `settings` are changed; the rest are left alone.
+	 */
+	const updatePrivacySettings = async (settings: PrivacySettingsUpdate) => {
+		for (const { name, value } of privacySettingsToCategories(settings)) {
+			await privacyQuery(name, value)
+		}
+	}
+
+	/**
+	 * Change the default audience for new statuses (who new statuses
+	 * are shared with). Mode 2 shares with contacts, mode 3 shares
+	 * with close friends only.
+	 */
+	const updateStatusDistributionMode = async (
+		mode: proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode,
+		userJids?: string[]
+	) => {
+		return appPatch(statusDistributionModePatch(mode, userJids))
 	}
 
 	const updateDefaultDisappearingMode = async (duration: number) => {
@@ -1110,6 +1186,22 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	/**
+	 * Pin or unpin a chat in the chat list.
+	 */
+	const pinChat = (jid: string, pin = true) => {
+		return chatModify({ pin }, jid)
+	}
+
+	/**
+	 * Archive or unarchive a chat.
+	 * lastMessages are the chat's recent messages, latest first —
+	 * required for the archive patch (same as clear/delete).
+	 */
+	const archiveChat = (jid: string, archive: boolean, lastMessages: LastMessageList) => {
+		return chatModify({ archive, lastMessages }, jid)
+	}
+
+	/**
 	 * Add or Edit Contact
 	 */
 	const addOrEditContact = (jid: string, contact: proto.SyncActionValue.IContactAction) => {
@@ -1548,10 +1640,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		updateStatusPrivacy,
 		updateReadReceiptsPrivacy,
 		updateGroupsAddPrivacy,
+		updatePrivacySettings,
+		updateStatusDistributionMode,
 		updateDefaultDisappearingMode,
 		getBusinessProfile,
 		resyncAppState,
 		chatModify,
+		pinChat,
+		archiveChat,
 		clearChat,
 		deleteChat,
 		deleteMessageForMe,

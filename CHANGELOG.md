@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Privacy, pins and statuses fixed (2026-11-20)
+
+Several account and chat controls that did not work are now fixed:
+
+- **Privacy settings:** `sock.updatePrivacySettings({ call, status, last, online, profile, groupadd, readreceipts, messages })` changes any combination of the eight settings in one call; each one is sent through its own privacy query and the rest are left alone.
+- **Status audience default:** `sock.updateStatusDistributionMode(mode, userJids?)` sets the default audience for new statuses — contacts, allow list, deny list, or Close Friends (mode 3).
+- **Pin and unpin chats:** `sock.pinChat(jid, pin?)` pins or unpins a chat; `sock.archiveChat(jid, archive, lastMessages)` archives or unarchives it.
+- **Pin and unpin messages:** `sock.pinMessage(jid, key, duration?)` pins a message in a group or 1:1 chat (default 1 day, up to 30 days) and `sock.unpinMessage(jid, key)` removes it.
+- **Personal status:** `sock.sendPersonalStatus(content, options?)` posts a status to `status@broadcast`.
+- **Close Friends status:** `sock.sendCloseFriendsStatus(content, closeFriendJids, options?)` posts a status visible only to the given close friends (close-friends audience marker plus the recipient list).
+- **Status viewing and reactions:** `sock.markStatusViewed(key, participant?)` marks a group or personal status as viewed, and `sock.reactToStatus(jid, key, emoji, statusJidList?)` reacts to a group or personal status.
+
 ### Native interactive buttons (2026-11-16)
 
 Baileys can now send real interactive messages with native-flow buttons —

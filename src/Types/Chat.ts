@@ -20,6 +20,22 @@ export type WAPrivacyCallValue = 'all' | 'known'
 
 export type WAPrivacyMessagesValue = 'all' | 'contacts'
 
+/**
+ * Privacy categories that can be changed in one call with
+ * updatePrivacySettings. Only the categories present are changed;
+ * the rest are left alone.
+ */
+export type PrivacySettingsUpdate = {
+	call?: WAPrivacyCallValue
+	status?: WAPrivacyValue
+	last?: WAPrivacyValue
+	online?: WAPrivacyOnlineValue
+	profile?: WAPrivacyValue
+	groupadd?: WAPrivacyGroupAddValue
+	readreceipts?: WAReadReceiptsValue
+	messages?: WAPrivacyMessagesValue
+}
+
 /** set of statuses visible to other people; see updatePresence() in WhatsAppWeb.Send */
 export type WAPresence = 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'
 

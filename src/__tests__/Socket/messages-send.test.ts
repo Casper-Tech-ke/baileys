@@ -1,6 +1,9 @@
 import { jest } from '@jest/globals'
+import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import makeWASocket from '../../Socket'
+import { buildStatusViewKey, closeFriendsStatusContent } from '../../Socket/messages-send'
+import { generateWAMessageContent } from '../../Utils/messages.js'
 import { makeSession, mockWebSocket } from '../TestUtils/session'
 
 mockWebSocket()
@@ -93,5 +96,100 @@ describe('relayMessage retry resend', () => {
 		expect(encryptMessage).toHaveBeenCalledWith(expect.objectContaining({ jid: RETRY_PARTICIPANT }))
 
 		await close()
+	})
+})
+
+const PIN_KEY = { remoteJid: '254143947797@s.whatsapp.net', fromMe: true, id: '3EB0PINMSG000000000001' }
+const STATUS_KEY = {
+	remoteJid: 'status@broadcast',
+	fromMe: false,
+	id: '3EB0STATUS000000000001',
+	participant: '254732982940@s.whatsapp.net'
+}
+const noUpload = async () => {
+	throw new Error('no upload expected for these contents')
+}
+
+describe('pin message content', () => {
+	it('builds a pin message with key, type and duration', async () => {
+		const message = await generateWAMessageContent(
+			{ pin: PIN_KEY, type: proto.PinInChat.Type.PIN_FOR_ALL, time: 86400 },
+			{ upload: noUpload }
+		)
+		expect(message.pinInChatMessage?.key).toEqual(PIN_KEY)
+		expect(message.pinInChatMessage?.type).toBe(proto.PinInChat.Type.PIN_FOR_ALL)
+		expect(message.messageContextInfo?.messageAddOnDurationInSecs).toBe(86400)
+	})
+
+	it('builds an unpin message with zero duration', async () => {
+		const message = await generateWAMessageContent(
+			{ pin: PIN_KEY, type: proto.PinInChat.Type.UNPIN_FOR_ALL },
+			{ upload: noUpload }
+		)
+		expect(message.pinInChatMessage?.key).toEqual(PIN_KEY)
+		expect(message.pinInChatMessage?.type).toBe(proto.PinInChat.Type.UNPIN_FOR_ALL)
+		expect(message.messageContextInfo?.messageAddOnDurationInSecs).toBe(0)
+	})
+})
+
+describe('close friends status content', () => {
+	it('marks a text status with the close-friends audience', async () => {
+		const message = await generateWAMessageContent(closeFriendsStatusContent({ text: 'Close friends test' }), {
+			upload: noUpload
+		})
+		expect(message.extendedTextMessage?.text).toBe('Close friends test')
+		expect(message.extendedTextMessage?.contextInfo?.statusAudienceMetadata?.audienceType).toBe(
+			proto.ContextInfo.StatusAudienceMetadata.AudienceType.CLOSE_FRIENDS
+		)
+	})
+
+	it('keeps existing context info on the content', async () => {
+		const content = closeFriendsStatusContent({
+			text: 'Hello',
+			contextInfo: { stanzaId: '3EB0QUOTED000000000001' }
+		})
+		expect('contextInfo' in content && content.contextInfo?.stanzaId).toBe('3EB0QUOTED000000000001')
+		expect('contextInfo' in content && content.contextInfo?.statusAudienceMetadata?.audienceType).toBe(1)
+		const message = await generateWAMessageContent(content, { upload: noUpload })
+		expect(message.extendedTextMessage?.contextInfo?.stanzaId).toBe('3EB0QUOTED000000000001')
+		expect(message.extendedTextMessage?.contextInfo?.statusAudienceMetadata?.audienceType).toBe(1)
+	})
+})
+
+describe('status reaction content', () => {
+	it('builds a reaction message with the status key and emoji', async () => {
+		const message = await generateWAMessageContent(
+			{ react: { key: STATUS_KEY, text: '❤️' } },
+			{
+				upload: noUpload
+			}
+		)
+		expect(message.reactionMessage?.key).toEqual(STATUS_KEY)
+		expect(message.reactionMessage?.text).toBe('❤️')
+	})
+})
+
+describe('buildStatusViewKey', () => {
+	it('marks the key as someone else’s message with the author as participant', () => {
+		expect(
+			buildStatusViewKey(
+				{ remoteJid: 'status@broadcast', fromMe: true, id: '3EB0STATUS000000000001' },
+				'254732982940@s.whatsapp.net'
+			)
+		).toEqual({
+			remoteJid: 'status@broadcast',
+			fromMe: false,
+			id: '3EB0STATUS000000000001',
+			participant: '254732982940@s.whatsapp.net'
+		})
+	})
+
+	it('keeps an undefined participant when none is given', () => {
+		const key = buildStatusViewKey(
+			{ remoteJid: '120363415416276985@g.us', fromMe: true, id: '3EB0GROUPSTATUS000001' },
+			undefined
+		)
+		expect(key.participant).toBeUndefined()
+		expect(key.fromMe).toBe(false)
 	})
 })
