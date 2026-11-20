@@ -4,6 +4,7 @@ import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
 	AnyMessageContent,
+	ChannelStatus,
 	MediaConnInfo,
 	MessageReceiptType,
 	MessageRelayOptions,
@@ -76,7 +77,17 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
-import { type ChannelStatusOptions, sendChannelStatus } from './channelStatus.js'
+import {
+	CHANNEL_STATUS_ECHO_TIMEOUT_MS,
+	type ChannelStatusContent,
+	type ChannelStatusFetchOptions,
+	type ChannelStatusOptions,
+	type NewsletterStatusSent,
+	fetchChannelStatuses,
+	reactChannelStatus,
+	revokeChannelStatus,
+	sendChannelStatus
+} from './channelStatus.js'
 import { type GroupHistoryDeps, type SendGroupHistoryOptions, sendGroupHistory } from './groupHistory.js'
 import { type GroupStatusOptions, sendGroupStatus } from './groupStatus.js'
 import { makeNewsletterSocket } from './newsletter'
@@ -1682,6 +1693,53 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				},
 				options
 			),
+		newsletterSendStatus: async (
+			jid: string,
+			content: ChannelStatusContent,
+			options: ChannelStatusOptions = {}
+		): Promise<NewsletterStatusSent> => {
+			const sent = await sendChannelStatus(
+				jid,
+				content,
+				{
+					sendNode,
+					waUploadToServer,
+					userJid: authState.creds.me?.id
+				},
+				options
+			)
+
+			// The server-assigned id of a posted status only arrives in the
+			// server echo of that status (an incoming <status> stanza,
+			// surfaced as 'newsletter.status'). The echo is a network round
+			// trip away, so attaching the listener right after the send
+			// cannot miss it. It is matched by the stanza id from the send.
+			// If the echo does not arrive in time (or the server rejected
+			// the post), the server id stays undefined — the send itself
+			// already went out.
+			const newsletterStatusServerId = await new Promise<string | undefined>(resolve => {
+				const onStatus = (status: ChannelStatus) => {
+					if (status.channelJid === jid && status.id === sent.id) {
+						clearTimeout(timer)
+						ev.off('newsletter.status', onStatus)
+						resolve(status.serverId)
+					}
+				}
+				const timer = setTimeout(() => {
+					ev.off('newsletter.status', onStatus)
+					resolve(undefined)
+				}, CHANNEL_STATUS_ECHO_TIMEOUT_MS)
+				ev.on('newsletter.status', onStatus)
+			})
+
+			return { ...sent, newsletterStatusServerId }
+		},
+		newsletterReactStatus: (jid: string, serverId: string, reaction: string | null) =>
+			reactChannelStatus(jid, serverId, reaction, { query, generateMessageTag }),
+		newsletterRevokeStatus: (jid: string, statusId: string) =>
+			revokeChannelStatus(jid, statusId, { query, generateMessageTag }),
+		newsletterFetchStatus: (jid: string, options: ChannelStatusFetchOptions) =>
+			fetchChannelStatuses(jid, options, { query, generateMessageTag }),
 		pinMessage,
 		unpinMessage,
 		sendPersonalStatus,

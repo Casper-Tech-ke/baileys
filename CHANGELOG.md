@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Channel status publishing & management (2026-11-21)
+
+Channel statuses can now be published and managed from the socket:
+
+- **Send:** `sock.newsletterSendStatus(jid, content, options?)` posts a text, image, video or audio status to a channel and returns the server id (`newsletterStatusServerId`) to use for reactions and pins. Image/video statuses can be marked as a question (`question: true`) or as AI-generated content (`aiContent: true`); a question can be answered with `interactionType: 'question_response'` plus `parentServerId`.
+- **React:** `sock.newsletterReactStatus(jid, serverId, emoji | null)` reacts to a status, or removes the reaction with `null`.
+- **Revoke:** `sock.newsletterRevokeStatus(jid, statusId)` deletes a published status.
+- **Fetch:** `sock.newsletterFetchStatus(jid, { count, before?, after? })` lists published statuses, paginated by server id.
+
 ### Polls: quiz, timed, add-option, vote passthrough (2026-11-21)
 
 Poll creation now covers the newer poll shapes, all verified against the
