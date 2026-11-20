@@ -119,6 +119,13 @@ type ViewOnce = {
 	viewOnce?: boolean
 }
 
+type ViewOnceV2 = {
+	/** send as a view-once message using the V2 envelope (required for view-once text) */
+	viewOnceV2?: boolean
+	/** send as a view-once message using the V2 extension envelope (voice-note-capable variant) */
+	viewOnceV2Extension?: boolean
+}
+
 type Editable = {
 	edit?: WAMessageKey
 }
@@ -389,7 +396,8 @@ export type AnyRegularMessageContent = (
 	| SharePhoneNumber
 	| RequestPhoneNumber
 ) &
-	ViewOnce
+	ViewOnce &
+	ViewOnceV2
 
 export type AnyMessageContent =
 	| AnyRegularMessageContent

@@ -830,7 +830,32 @@ export const generateWAMessageContent = async (
 		m = { interactiveMessage }
 	}
 
-	if (hasOptionalProperty(message, 'viewOnce') && !!message.viewOnce) {
+	// View-once text (and media) in the V2 envelope: the official client sends
+	// viewOnceMessageV2 — or the voice-note-capable viewOnceMessageV2Extension —
+	// with the viewOnce flag on the inner message itself. The old v1 envelope is
+	// kept for plain `viewOnce`, which predates view-once text.
+	if (
+		(hasOptionalProperty(message, 'viewOnceV2') && !!message.viewOnceV2) ||
+		(hasOptionalProperty(message, 'viewOnceV2Extension') && !!message.viewOnceV2Extension)
+	) {
+		if (m.extendedTextMessage) {
+			m.extendedTextMessage.viewOnce = true
+		} else if (m.imageMessage) {
+			m.imageMessage.viewOnce = true
+		} else if (m.videoMessage) {
+			m.videoMessage.viewOnce = true
+		} else if (m.ptvMessage) {
+			m.ptvMessage.viewOnce = true
+		} else if (m.audioMessage) {
+			m.audioMessage.viewOnce = true
+		}
+
+		if (hasOptionalProperty(message, 'viewOnceV2') && !!message.viewOnceV2) {
+			m = { viewOnceMessageV2: { message: m } }
+		} else {
+			m = { viewOnceMessageV2Extension: { message: m } }
+		}
+	} else if (hasOptionalProperty(message, 'viewOnce') && !!message.viewOnce) {
 		m = { viewOnceMessage: { message: m } }
 	}
 
