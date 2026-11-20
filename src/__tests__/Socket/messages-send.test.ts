@@ -3,6 +3,8 @@ import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import makeWASocket from '../../Socket'
 import { buildStatusViewKey, closeFriendsStatusContent } from '../../Socket/messages-send'
+import type { WAMessageKey } from '../../Types/Message'
+import type { PossiblyExtendedCacheStore } from '../../Types/Socket'
 import { generateWAMessageContent } from '../../Utils/messages.js'
 import { makeSession, mockWebSocket } from '../TestUtils/session'
 
@@ -12,7 +14,13 @@ type WebSocketSend = (data: Uint8Array | Buffer, callback: (error?: Error | null
 
 const RETRY_PARTICIPANT = '2222222222:3@lid'
 
-async function makeTestSocket() {
+async function makeTestSocket(
+	overrides: {
+		getMessage?: (key: WAMessageKey) => Promise<proto.IMessage | undefined>
+		userDevicesCache?: PossiblyExtendedCacheStore
+		lidMappings?: Record<string, string>
+	} = {}
+) {
 	const { state, clear } = await makeSession()
 	state.creds.me = {
 		id: '1111111111:1@s.whatsapp.net',
@@ -21,10 +29,16 @@ async function makeTestSocket() {
 	}
 	state.creds.account = {}
 
+	// pre-seeded PN -> LID mappings so the send skips the live USync lookup
+	if (overrides.lidMappings) {
+		await state.keys.set({ 'lid-mapping': overrides.lidMappings })
+	}
+
 	const sock = makeWASocket({
 		...DEFAULT_CONNECTION_CONFIG,
 		auth: state,
-		shouldSyncHistoryMessage: () => false
+		shouldSyncHistoryMessage: () => false,
+		...overrides
 	})
 
 	// swap the raw socket for an open in-memory one, so relayMessage can "send" offline
@@ -191,5 +205,64 @@ describe('buildStatusViewKey', () => {
 		)
 		expect(key.participant).toBeUndefined()
 		expect(key.fromMe).toBe(false)
+	})
+})
+
+describe('pinMessage safety', () => {
+	const CHAT_JID = '254143947797@s.whatsapp.net'
+
+	it('sends the pin when the message exists in the chat', async () => {
+		const getMessage = jest.fn(async (key: WAMessageKey) =>
+			key.id === PIN_KEY.id ? { conversation: 'hello to pin' } : undefined
+		)
+		// pre-seeded device cache so the send skips the live device lookup
+		const userDevicesCache: PossiblyExtendedCacheStore = {
+			get: async () => undefined,
+			set: async () => {},
+			del: async () => {},
+			flushAll: async () => {},
+			mget: async () => ({
+				// target chat + our own device (relayMessage re-enumerates both)
+				'254143947797': [{ user: '254143947797', server: 's.whatsapp.net', device: 0 }],
+				'1111111111': [{ user: '1111111111', server: 's.whatsapp.net', device: 1 }]
+			})
+		}
+		const { sock, close } = await makeTestSocket({
+			getMessage,
+			userDevicesCache,
+			lidMappings: { '254143947797': '33333333333333', '1111111111': '1111111111' }
+		})
+
+		const sent = await sock.pinMessage(CHAT_JID, PIN_KEY)
+
+		expect(getMessage).toHaveBeenCalledWith({ ...PIN_KEY, remoteJid: CHAT_JID })
+		expect(sent?.message?.pinInChatMessage?.key).toEqual(PIN_KEY)
+		expect(sent?.message?.pinInChatMessage?.type).toBe(proto.PinInChat.Type.PIN_FOR_ALL)
+
+		await close()
+	})
+
+	it('refuses to pin a message that is not in the chat', async () => {
+		const getMessage = jest.fn(async () => undefined)
+		const { sock, close } = await makeTestSocket({ getMessage })
+
+		await expect(sock.pinMessage(CHAT_JID, PIN_KEY)).rejects.toThrow(
+			`refusing to pin message ${PIN_KEY.id} in ${CHAT_JID}: message not found in this chat`
+		)
+		expect(getMessage).toHaveBeenCalledWith({ ...PIN_KEY, remoteJid: CHAT_JID })
+
+		await close()
+	})
+
+	it('refuses to pin a message that belongs to another chat', async () => {
+		const getMessage = jest.fn(async () => ({ conversation: 'somewhere else' }))
+		const { sock, close } = await makeTestSocket({ getMessage })
+
+		await expect(sock.pinMessage('120363415416276985@g.us', PIN_KEY)).rejects.toThrow(
+			`refusing to pin message ${PIN_KEY.id}: it belongs to ${CHAT_JID}, not 120363415416276985@g.us`
+		)
+		expect(getMessage).not.toHaveBeenCalled()
+
+		await close()
 	})
 })

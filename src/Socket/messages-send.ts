@@ -185,7 +185,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		patchMessageBeforeSending,
 		cachedGroupMetadata,
 		enableRecentMessageCache,
-		maxMsgRetryCount
+		maxMsgRetryCount,
+		getMessage
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const {
@@ -1565,12 +1566,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 * Pin a message in a chat for everyone, for `duration` seconds.
 	 * The server accepts 24 hours (86400), 7 days (604800) or
 	 * 30 days (2592000); defaults to 24 hours.
+	 *
+	 * Safety: the message must exist in the chat first. Pinning a
+	 * message that is not there gets the account flagged, so the pin
+	 * is only sent after the message is found in the store. A missing
+	 * message is refused here instead of sent.
 	 */
 	const pinMessage = async (
 		jid: string,
 		key: WAMessageKey,
 		duration: 86400 | 604800 | 2592000 = 86400
 	) => {
+		if (key.remoteJid && key.remoteJid !== jid) {
+			throw new Error(`refusing to pin message ${key.id}: it belongs to ${key.remoteJid}, not ${jid}`)
+		}
+		const found = typeof getMessage === 'function' ? await getMessage({ ...key, remoteJid: jid }) : undefined
+		if (!found) {
+			throw new Error(`refusing to pin message ${key.id} in ${jid}: message not found in this chat`)
+		}
 		return sendMessage(jid, { pin: key, type: proto.PinInChat.Type.PIN_FOR_ALL, time: duration })
 	}
 
