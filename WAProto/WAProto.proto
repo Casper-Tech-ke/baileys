@@ -2159,6 +2159,7 @@ message Message {
     optional PollCreationMessage pollCreationMessageV5 = 111;
     optional NewsletterFollowerInviteMessage newsletterFollowerInviteMessageV2 = 113;
     optional PollResultSnapshotMessage pollResultSnapshotMessageV3 = 115;
+    optional PollAddOptionMessage pollAddOptionMessage = 121;
     message AlbumMessage {
         optional uint32 expectedImageCount = 2;
         optional uint32 expectedVideoCount = 3;
@@ -3236,6 +3237,9 @@ message Message {
         optional Message.PollContentType pollContentType = 6;
         optional Message.PollType pollType = 7;
         optional Option correctAnswer = 8;
+        optional int64 endTime = 9;
+        optional bool hideParticipantName = 10;
+        optional bool allowAddOption = 11;
         message Option {
             optional string optionName = 1;
             optional string optionHash = 2;
@@ -3269,6 +3273,11 @@ message Message {
         optional Message.PollEncValue vote = 2;
         optional Message.PollUpdateMessageMetadata metadata = 3;
         optional int64 senderTimestampMs = 4;
+    }
+
+    message PollAddOptionMessage {
+        optional MessageKey pollCreationMessageKey = 1;
+        optional PollCreationMessage.Option addOption = 2;
     }
 
     message PollUpdateMessageMetadata {

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Polls: quiz, timed, add-option, vote passthrough (2026-11-21)
+
+Poll creation now covers the newer poll shapes, all verified against the
+app's own proto fields (PollCreationMessage fields 9-11, PollAddOptionMessage
+field 121):
+
+- **Quiz polls:** `poll: { pollType: 1, correctAnswer }` sends a quiz poll
+  (single-select only; the correct answer must be one of the values).
+- **Timed polls:** `poll: { endTime, hideParticipantName, allowAddOption }`
+  sets the closing time (unix seconds, must be in the future), hides voter
+  names, and lets participants add their own options.
+- **Add an option:** `sock.sendMessage(jid, { pollAddOption: { pollCreationMessageKey, option } })`
+  adds one option to an existing poll (the option hash is derived the same way
+  vote aggregation matches options). A raw `pollAddOptionMessage` passes
+  through untouched.
+- **Vote update:** a raw `pollUpdateMessage` (pre-encrypted vote) passes
+  through untouched for callers that encrypted the vote themselves.
+- **Alias:** `selectableOptionsCount` is accepted alongside the historic
+  `selectableCount` (the proto name wins if both are given).
+
+
 ### Fresh sessions resolve on their own (2026-11-20)
 
 - **Fixed:** chat actions that need synced state (archive, pin, clear, status audience) now work on a freshly connected session without a manual step.

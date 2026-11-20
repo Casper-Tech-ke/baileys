@@ -1311,7 +1311,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			normalizedMessage.pollCreationMessage ||
 			normalizedMessage.pollCreationMessageV2 ||
 			normalizedMessage.pollCreationMessageV3 ||
-			normalizedMessage.pollUpdateMessage
+			normalizedMessage.pollUpdateMessage ||
+			normalizedMessage.pollAddOptionMessage
 		) {
 			return 'poll'
 		}

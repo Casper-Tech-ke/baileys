@@ -137,10 +137,30 @@ type WithDimensions = {
 export type PollMessageOptions = {
 	name: string
 	selectableCount?: number
+	/** alias for `selectableCount`, matching the proto field name; wins if both are given */
+	selectableOptionsCount?: number
 	values: string[]
 	/** 32 byte message secret to encrypt poll selections */
 	messageSecret?: Uint8Array
 	toAnnouncementGroup?: boolean
+	/** 0 = regular poll, 1 = quiz (one correct answer); defaults to 0 */
+	pollType?: proto.Message.PollType
+	/** the correct option for a quiz poll; must be one of `values` */
+	correctAnswer?: string
+	/** unix seconds when the poll closes; must be in the future */
+	endTime?: number
+	/** hide voter names in the results */
+	hideParticipantName?: boolean
+	/** let participants add their own options to the poll */
+	allowAddOption?: boolean
+}
+
+/** Add one option to an existing poll. */
+export type PollAddOptionOptions = {
+	/** key of the poll creation message to add the option to */
+	pollCreationMessageKey: WAMessageKey
+	/** the new option text */
+	option: string
 }
 
 export type EventMessageOptions = {
@@ -349,6 +369,18 @@ export type AnyRegularMessageContent = (
 	  } & Mentionable &
 			Contextable &
 			Editable)
+	| {
+			/** Add one option to an existing poll. */
+			pollAddOption: PollAddOptionOptions
+	  }
+	| {
+			/** Raw poll vote update, with a pre-encrypted vote (voting is usually handled internally). */
+			pollUpdateMessage: proto.Message.IPollUpdateMessage
+	  }
+	| {
+			/** Raw poll add-option message, with a pre-built option. */
+			pollAddOptionMessage: proto.Message.IPollAddOptionMessage
+	  }
 	| ({
 			album: AlbumMessageOptions
 	  } & Contextable &

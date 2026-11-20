@@ -708,17 +708,38 @@ export const generateWAMessageContent = async (
 		m.eventMessage.isScheduleCall = message.event.isScheduleCall ?? false
 		m.eventMessage.location = message.event.location
 	} else if (hasNonNullishProperty(message, 'poll')) {
-		message.poll.selectableCount ||= 0
-		message.poll.toAnnouncementGroup ||= false
+		// `selectableOptionsCount` is the proto field name; `selectableCount` is the
+		// historic Baileys name. Accept both, with the proto name winning.
+		const selectableCount = message.poll.selectableOptionsCount ?? message.poll.selectableCount ?? 0
+		const toAnnouncementGroup = message.poll.toAnnouncementGroup ?? false
+		const pollType = message.poll.pollType ?? proto.Message.PollType.POLL
 
 		if (!Array.isArray(message.poll.values)) {
 			throw new Boom('Invalid poll values', { statusCode: 400 })
 		}
 
-		if (message.poll.selectableCount < 0 || message.poll.selectableCount > message.poll.values.length) {
+		if (selectableCount < 0 || selectableCount > message.poll.values.length) {
 			throw new Boom(`poll.selectableCount in poll should be >= 0 and <= ${message.poll.values.length}`, {
 				statusCode: 400
 			})
+		}
+
+		if (pollType === proto.Message.PollType.QUIZ) {
+			if (selectableCount !== 1) {
+				throw new Boom('quiz polls must allow exactly one selection', { statusCode: 400 })
+			}
+
+			if (!message.poll.correctAnswer) {
+				throw new Boom('quiz polls need a correctAnswer', { statusCode: 400 })
+			}
+
+			if (!message.poll.values.includes(message.poll.correctAnswer)) {
+				throw new Boom('quiz correctAnswer must be one of the poll values', { statusCode: 400 })
+			}
+		}
+
+		if (message.poll.endTime !== undefined && message.poll.endTime <= Date.now() / 1000) {
+			throw new Boom('poll endTime must be in the future', { statusCode: 400 })
 		}
 
 		m.messageContextInfo = {
@@ -726,17 +747,22 @@ export const generateWAMessageContent = async (
 			messageSecret: message.poll.messageSecret || randomBytes(32)
 		}
 
-		const pollCreationMessage = {
+		const pollCreationMessage: proto.Message.IPollCreationMessage = {
 			name: message.poll.name,
-			selectableOptionsCount: message.poll.selectableCount,
-			options: message.poll.values.map(optionName => ({ optionName }))
+			selectableOptionsCount: selectableCount,
+			options: message.poll.values.map(optionName => ({ optionName })),
+			pollType,
+			correctAnswer: message.poll.correctAnswer ? { optionName: message.poll.correctAnswer } : undefined,
+			endTime: message.poll.endTime,
+			hideParticipantName: message.poll.hideParticipantName,
+			allowAddOption: message.poll.allowAddOption
 		}
 
-		if (message.poll.toAnnouncementGroup) {
+		if (toAnnouncementGroup) {
 			// poll v2 is for community announcement groups (single select and multiple)
 			m.pollCreationMessageV2 = pollCreationMessage
 		} else {
-			if (message.poll.selectableCount === 1) {
+			if (selectableCount === 1) {
 				//poll v3 is for single select polls
 				m.pollCreationMessageV3 = pollCreationMessage
 			} else {
@@ -744,6 +770,28 @@ export const generateWAMessageContent = async (
 				m.pollCreationMessage = pollCreationMessage
 			}
 		}
+	} else if (hasNonNullishProperty(message, 'pollAddOption')) {
+		// Add one option to an existing poll. The option hash is the same SHA-256
+		// of the option name the vote aggregation uses to match votes to options.
+		if (!message.pollAddOption.option) {
+			throw new Boom('pollAddOption needs an option', { statusCode: 400 })
+		}
+
+		m.pollAddOptionMessage = {
+			pollCreationMessageKey: message.pollAddOption.pollCreationMessageKey,
+			addOption: {
+				optionName: message.pollAddOption.option,
+				optionHash: sha256(Buffer.from(message.pollAddOption.option)).toString()
+			}
+		}
+	} else if (hasNonNullishProperty(message, 'pollUpdateMessage')) {
+		// Manual poll vote update, with a pre-encrypted vote. Voting is usually
+		// handled internally; this is the raw passthrough for callers that
+		// encrypted the vote themselves.
+		m.pollUpdateMessage = message.pollUpdateMessage
+	} else if (hasNonNullishProperty(message, 'pollAddOptionMessage')) {
+		// Raw poll add-option message, with a pre-built option.
+		m.pollAddOptionMessage = message.pollAddOptionMessage
 	} else if (hasNonNullishProperty(message, 'album')) {
 		m.albumMessage = {
 			expectedImageCount: message.album.expectedImageCount,
