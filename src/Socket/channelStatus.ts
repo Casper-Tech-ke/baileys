@@ -364,3 +364,374 @@ export const fetchChannelStatuses = async (
 
 	return { statuses, raw }
 }
+
+/**
+ * Fetch the answers people gave to a channel status question, or the
+ * responses to a channel status.
+ *
+ * Two jobs in the app do this, both building the same IQ and differing
+ * only in the `<question_responses>` child:
+ *
+ * - GetNewsletterQuestionResponsesJob (answers to a QUESTION status):
+ *   `J9G $t=8` builds an IQ `xmlns="newsletter" type="get"` to the
+ *   channel with a `<question_responses server_id="<question server id>"
+ *   count="<count>">` child. Optional children, in order, are themselves
+ *   `<question_responses>` nodes (that nesting is what the app sends):
+ *   `<question_responses before="<beforeResponseServerId>"/>` for the
+ *   next page (C1941J8e(str, 22)), `<question_responses><filters>
+ *   <contacts|replied|starred/></filters></question_responses>` for a
+ *   filter (C1946J8j: ordinal 0 = contacts, 1 = replied, 2 = starred),
+ *   and `<question_responses><search text="<query>"/></question_responses>`
+ *   for a text search (C1941J8e default case). The job hardcodes
+ *   count = 30, rejects questionServerId < 0, and `server_id` is only
+ *   written when 99 <= id <= 2147476647 (IHO.A0S); count is only written
+ *   when 1 <= count <= 1000.
+ * - GetNewsletterStatusResponsesJob (responses to a STATUS):
+ *   `J9G $t=10` is the same IQ but the child carries `type="status"`
+ *   and has no search child (only before + filter). The job rejects
+ *   questionStatusServerId outside 99 <= id < 2147476648 and count
+ *   outside 1..300 (J9G.A02).
+ *
+ * The result (parsed by J9S for questions, J9T for statuses) is the IQ
+ * result with a `<question_responses server_id="..." [type="status"]>`
+ * child holding 0..N `<question_response>` children (J9T caps the list
+ * at 300). Each item (KG6.A0R + A0Q + A0C + A0H) is:
+ *
+ *   <question_response>
+ *     <sender lid="<responder LID>" notify_name="<name>">
+ *       <picture direct_path="..."/>
+ *     </sender>
+ *     <message id="<stanza id>" t="<unix secs>" type="text" [is_sender="true"]>
+ *       <plaintext>proto.Message bytes</plaintext>
+ *       <meta questiontype="response" response_server_id="<answer server id>"/>
+ *     </message>
+ *     [<flags> replied / starred markers </flags>]
+ *     [<reactions><reaction code="..."/></reactions>]
+ *   </question_response>
+ *
+ * The `<message>` is the same shape as a status stanza: `<plaintext>`
+ * holds the plain proto.Message (a text answer is an
+ * extendedTextMessage). `response_server_id` is the answer's own server
+ * id — pass the last response's id as `before` for the next page.
+ * The `replied`/`starred` flag encoding inside `<flags>` could not be
+ * pinned down from the decompiled parser (child vs attr), so both are
+ * accepted; a live check should confirm which one the server sends.
+ */
+
+/** Filter for fetching status responses (C1946J8j: 0 = contacts, 1 = replied, 2 = starred). */
+export type ChannelStatusResponseFilter = 'contacts' | 'replied' | 'starred'
+
+/**
+ * Which responses to fetch. 'question' fetches the answers to a question
+ * status (no `type` attr, search allowed); 'status' fetches responses to
+ * a status (`type="status"` on the child, no search).
+ */
+export type ChannelStatusResponsesKind = 'question' | 'status'
+
+/** Options for fetching channel status responses. */
+export type ChannelStatusResponsesOptions = {
+	/** how many responses to fetch; defaults to 30, the app's hardcoded question count */
+	count?: number
+	/** fetch responses older than this response server id (the `before` cursor) */
+	before?: string
+	/** only responses from contacts / that were replied to / that were starred */
+	filter?: ChannelStatusResponseFilter
+	/** free-text search over the answers; question kind only (the status job has no search) */
+	searchQuery?: string
+	/** 'question' (default) or 'status' */
+	kind?: ChannelStatusResponsesKind
+}
+
+/** One answer/response to a channel status, decoded from a `<question_response>` node. */
+export type ChannelStatusResponse = {
+	/** stanza id of the answer message (`<message id>`) */
+	id: string
+	/** the answer's own server id (`<meta response_server_id>`); the `before` cursor for the next page */
+	responseServerId?: string
+	/** responder's LID (`<sender lid>`) */
+	senderLid?: string
+	/** responder's display name (`<sender notify_name>`) */
+	senderNotifyName?: string
+	/** responder's profile picture path (`<sender><picture direct_path>`) */
+	senderPictureDirectPath?: string
+	/** unix timestamp (seconds) from the answer `<message t>` */
+	messageTimestamp: number
+	/** true when the answer is our own (`<message is_sender="true">`) */
+	fromMe: boolean
+	/** `<meta questiontype>`; the app requires this to be 'response' */
+	questionType?: string
+	/** text of a text answer, from extendedTextMessage.text (or conversation) */
+	text?: string
+	/** the full decoded proto.Message, for media / other answer kinds */
+	message?: proto.IMessage
+	/** the answer was replied to (from the `<flags>` child) */
+	replied: boolean
+	/** the answer was starred (from the `<flags>` child) */
+	starred: boolean
+	/** reaction code on the answer, if any (`<reactions><reaction code>`) */
+	reaction?: string
+	/** the raw `<question_response>` node */
+	raw: BinaryNode
+}
+
+/** What fetchChannelStatusResponses returns: the parsed answers plus the raw IQ result. */
+export type ChannelStatusResponsesResult = {
+	responses: ChannelStatusResponse[]
+	/** `server_id` of the `<question_responses>` envelope (the question/status asked about) */
+	serverId?: string
+	/** `type` of the `<question_responses>` envelope ('status' for the status kind) */
+	type?: string
+	raw: BinaryNode
+}
+
+/** The app's hardcoded count for the question-responses job. */
+export const CHANNEL_STATUS_QUESTION_RESPONSES_DEFAULT_COUNT = 30
+/** Max count the app writes for question responses (J9G $t=8: 1..1000). */
+export const CHANNEL_STATUS_QUESTION_RESPONSES_MAX_COUNT = 1000
+/** Max count the app writes for status responses (J9G.A02: 1..300). */
+export const CHANNEL_STATUS_RESPONSES_MAX_COUNT = 300
+/** `server_id` is only written on the wire inside this range (IHO.A0S). */
+export const CHANNEL_STATUS_MIN_SERVER_ID = 99
+export const CHANNEL_STATUS_MAX_SERVER_ID = 2147476647
+
+/**
+ * Decode one `<question_response>` node (KG6.A0R + A0Q + A0C + A0H).
+ * Returns undefined when the item has no `<message>` child or its
+ * `<plaintext>` payload is not a decodable proto.Message — the app's
+ * parser requires both, so such an item is not a usable answer.
+ */
+export const decodeChannelStatusResponse = (node: BinaryNode): ChannelStatusResponse | undefined => {
+	const messageNode = getBinaryNodeChild(node, 'message')
+	if (!messageNode) {
+		return undefined
+	}
+
+	let message: proto.IMessage | undefined
+	let text: string | undefined
+	const plaintextNode = getBinaryNodeChild(messageNode, 'plaintext')
+	if (plaintextNode?.content) {
+		const contentBuf =
+			typeof plaintextNode.content === 'string'
+				? Buffer.from(plaintextNode.content, 'binary')
+				: Buffer.from(plaintextNode.content as Uint8Array)
+		try {
+			message = proto.Message.decode(contentBuf)
+		} catch {
+			return undefined
+		}
+
+		const extendedText = message.extendedTextMessage
+		text = extendedText?.text || message.conversation || undefined
+	}
+
+	const senderNode = getBinaryNodeChild(node, 'sender')
+	const metaNode = getBinaryNodeChild(messageNode, 'meta')
+	const flagsNode = getBinaryNodeChild(node, 'flags')
+	const hasFlag = (name: string): boolean => {
+		if (!flagsNode) {
+			return false
+		}
+		// the decompiled parser checks for a `replied`/`starred` marker
+		// inside <flags> without saying whether it is a child or an
+		// attr, so both shapes are accepted
+		return !!getBinaryNodeChild(flagsNode, name) || flagsNode.attrs[name] !== undefined
+	}
+	const reactionsNode = getBinaryNodeChild(node, 'reactions')
+	const reactionNode = reactionsNode ? getBinaryNodeChild(reactionsNode, 'reaction') : undefined
+	const pictureNode = senderNode ? getBinaryNodeChild(senderNode, 'picture') : undefined
+
+	return {
+		id: messageNode.attrs.id || '',
+		responseServerId: metaNode?.attrs.response_server_id,
+		senderLid: senderNode?.attrs.lid,
+		senderNotifyName: senderNode?.attrs.notify_name,
+		senderPictureDirectPath: pictureNode?.attrs.direct_path,
+		messageTimestamp: +(messageNode.attrs.t || 0),
+		fromMe: messageNode.attrs.is_sender === 'true',
+		questionType: metaNode?.attrs.questiontype,
+		text,
+		message,
+		replied: hasFlag('replied'),
+		starred: hasFlag('starred'),
+		reaction: reactionNode?.attrs.code,
+		raw: node
+	}
+}
+
+/**
+ * Fetch the answers to a channel status question (`kind: 'question'`,
+ * default), or the responses to a channel status (`kind: 'status'`).
+ * `serverId` is the server id of the question/status being asked about.
+ * Page with `before` set to the last response's `responseServerId`.
+ * The `searchQuery` option is only valid for the question kind — the
+ * status job in the app has no search parameter.
+ */
+export const fetchChannelStatusResponses = async (
+	jid: string,
+	serverId: string,
+	options: ChannelStatusResponsesOptions,
+	deps: ChannelStatusQueryDeps
+): Promise<ChannelStatusResponsesResult> => {
+	const kind = options.kind ?? 'question'
+	const count = options.count ?? CHANNEL_STATUS_QUESTION_RESPONSES_DEFAULT_COUNT
+
+	const serverIdNum = Number(serverId)
+	if (!Number.isInteger(serverIdNum)) {
+		throw new Boom('serverId must be an integer server id', { statusCode: 400 })
+	}
+
+	if (kind === 'question') {
+		if (serverIdNum < 0) {
+			throw new Boom('serverId must not be negative', { statusCode: 400 })
+		}
+		if (count < 1 || count > CHANNEL_STATUS_QUESTION_RESPONSES_MAX_COUNT) {
+			throw new Boom(
+				`count must be between 1 and ${CHANNEL_STATUS_QUESTION_RESPONSES_MAX_COUNT} for question responses`,
+				{ statusCode: 400 }
+			)
+		}
+	} else {
+		if (serverIdNum < CHANNEL_STATUS_MIN_SERVER_ID || serverIdNum >= CHANNEL_STATUS_MAX_SERVER_ID + 1) {
+			throw new Boom(
+				`serverId must be between ${CHANNEL_STATUS_MIN_SERVER_ID} and ${CHANNEL_STATUS_MAX_SERVER_ID} for status responses`,
+				{ statusCode: 400 }
+			)
+		}
+		if (count < 1 || count > CHANNEL_STATUS_RESPONSES_MAX_COUNT) {
+			throw new Boom(
+				`count must be between 1 and ${CHANNEL_STATUS_RESPONSES_MAX_COUNT} for status responses`,
+				{ statusCode: 400 }
+			)
+		}
+		if (options.searchQuery !== undefined) {
+			throw new Boom('searchQuery is only supported for question responses', { statusCode: 400 })
+		}
+	}
+
+	if (options.before !== undefined && options.before.length === 0) {
+		throw new Boom('before must not be empty', { statusCode: 400 })
+	}
+	if (options.searchQuery !== undefined && options.searchQuery.length === 0) {
+		throw new Boom('searchQuery must not be empty', { statusCode: 400 })
+	}
+
+	const responsesAttrs: Record<string, string> = { count: count.toString() }
+	if (kind === 'status') {
+		responsesAttrs.type = 'status'
+	}
+	// the app only writes server_id inside 99..2147476647 (IHO.A0S)
+	if (serverIdNum >= CHANNEL_STATUS_MIN_SERVER_ID && serverIdNum <= CHANNEL_STATUS_MAX_SERVER_ID) {
+		responsesAttrs.server_id = String(serverIdNum)
+	}
+
+	// the optional children are <question_responses> nodes nested inside
+	// the outer <question_responses> — that nesting is what the app
+	// sends (C1941J8e / C1946J8j), in before, filter, search order
+	const children: BinaryNode[] = []
+	if (options.before) {
+		children.push({ tag: 'question_responses', attrs: { before: options.before } })
+	}
+	if (options.filter) {
+		children.push({
+			tag: 'question_responses',
+			attrs: {},
+			content: [
+				{
+					tag: 'filters',
+					attrs: {},
+					content: [{ tag: options.filter, attrs: {} }]
+				}
+			]
+		})
+	}
+	if (options.searchQuery) {
+		children.push({
+			tag: 'question_responses',
+			attrs: {},
+			content: [
+				{
+					tag: 'search',
+					attrs: { text: options.searchQuery }
+				}
+			]
+		})
+	}
+
+	const raw = await deps.query({
+		tag: 'iq',
+		attrs: {
+			id: deps.generateMessageTag(),
+			type: 'get',
+			xmlns: 'newsletter',
+			to: jid
+		},
+		content: [{ tag: 'question_responses', attrs: responsesAttrs, content: children }]
+	})
+
+	const responsesNode = getBinaryNodeChild(raw, 'question_responses') ?? raw
+	const responses = getBinaryNodeChildren(responsesNode, 'question_response')
+		.map(node => decodeChannelStatusResponse(node))
+		.filter((response): response is ChannelStatusResponse => !!response)
+
+	return {
+		responses,
+		serverId: responsesNode.attrs.server_id,
+		type: responsesNode.attrs.type,
+		raw
+	}
+}
+
+/**
+ * Send a view receipt for a channel status — the receipt the app sends
+ * when a channel status is viewed (SendNewsletterStatusViewReceiptJob).
+ *
+ * What the APK pins down:
+ * - The job is enqueued from StatusManager.markStatusAsSeenInternal when
+ *   a newsletter status is marked seen, carrying `newsletterRawJid`
+ *   (the channel JID), `receiptStanzaId` (the status message's stanza
+ *   id — the `<status id>`, e.g. '3EB079CA1FB41899DF027B', NOT the
+ *   server_id) and `sortId` (the message's local sort_id), and only
+ *   when sortId > 0. Its job id is `status-view-receipt-<rawJid>`.
+ * - The receiving side (StatusMessageStateUpdateReceiptHandler /
+ *   processNewsletterStatusViewReceipt, C1U8) expects a receipt stanza
+ *   with type "view" (or "read-self"), `from` the viewer, `id` the
+ *   status stanza id, and a `t` (unix seconds) attr, and looks the
+ *   status up by (newsletter JID, stanza id). It never reads a sort id
+ *   off the stanza.
+ *
+ * What the APK does NOT show: the job class defines no onRun in the dex
+ * (verified by parsing classes10.dex — only <init>, A00 and Ct8 exist),
+ * so the stanza the app actually sends could not be read from it. The
+ * shape sent here is the generic receipt the fork already builds in
+ * sendReceipt (`<receipt to id [type] [t]>`, fire-and-forget via
+ * sendNode) with type "view", which is exactly the shape the receiving
+ * handler expects. This needs a live check against a real channel
+ * before it is trusted.
+ *
+ * `sortId` is accepted because the app's job carries it and only fires
+ * when it is positive; it is validated the same way but is NOT placed
+ * on the wire, because no APK evidence puts it there.
+ */
+export const sendChannelStatusViewReceipt = async (
+	jid: string,
+	receiptStanzaId: string,
+	sortId: number,
+	deps: Pick<ChannelStatusDeps, 'sendNode'>
+): Promise<void> => {
+	if (!receiptStanzaId) {
+		throw new Boom('receiptStanzaId is required to send a channel status view receipt', { statusCode: 400 })
+	}
+	if (!Number.isInteger(sortId) || sortId <= 0) {
+		throw new Boom('sortId must be a positive integer', { statusCode: 400 })
+	}
+
+	await deps.sendNode({
+		tag: 'receipt',
+		attrs: {
+			to: jid,
+			id: receiptStanzaId,
+			type: 'view',
+			t: Math.floor(Date.now() / 1000).toString()
+		}
+	})
+}

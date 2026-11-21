@@ -86,11 +86,31 @@ import {
 	type ChannelStatusFetchOptions,
 	type ChannelStatusOptions,
 	type NewsletterStatusSent,
+	fetchChannelStatusResponses,
 	fetchChannelStatuses,
 	reactChannelStatus,
 	revokeChannelStatus,
-	sendChannelStatus
+	sendChannelStatus,
+	sendChannelStatusViewReceipt,
+	type ChannelStatusResponsesOptions,
+	type ChannelStatusResponsesResult
 } from './channelStatus.js'
+import { newsletterSendPollVote as sendNewsletterPollVote } from './channelPollVote.js'
+import {
+	cancelChannelPost,
+	fetchChannelScheduledPosts,
+	rescheduleChannelPost,
+	scheduleChannelPost,
+	sendChannelPostNow,
+	type ChannelScheduleFetchOptions,
+	type ChannelScheduleOptions
+} from './channelSchedule.js'
+import {
+	newsletterDirectoryList as listNewsletterDirectory,
+	newsletterDirectorySearch as searchNewsletterDirectory,
+	type NewsletterDirectoryListOptions,
+	type NewsletterDirectorySearchOptions
+} from './newsletterDirectory.js'
 import { type GroupHistoryDeps, type SendGroupHistoryOptions, sendGroupHistory } from './groupHistory.js'
 import { type GroupStatusOptions, sendGroupStatus } from './groupStatus.js'
 import { makeNewsletterSocket } from './newsletter'
@@ -1801,6 +1821,75 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			revokeChannelStatus(jid, statusId, { query, generateMessageTag }),
 		newsletterFetchStatus: (jid: string, options: ChannelStatusFetchOptions) =>
 			fetchChannelStatuses(jid, options, { query, generateMessageTag }),
+		newsletterFetchStatusResponses: (jid: string, serverId: string, options: ChannelStatusResponsesOptions) =>
+			fetchChannelStatusResponses(jid, serverId, options, { query, generateMessageTag }),
+		newsletterSendStatusViewReceipt: (jid: string, receiptStanzaId: string, sortId: number) =>
+			sendChannelStatusViewReceipt(jid, receiptStanzaId, sortId, { sendNode }),
+		newsletterScheduleChannelPost: (
+			jid: string,
+			content: AnyMessageContent,
+			publishAtMs: number,
+			options: ChannelScheduleOptions = {}
+		) =>
+			scheduleChannelPost(
+				jid,
+				content,
+				publishAtMs,
+				{
+					sendNode,
+					waUploadToServer,
+					userJid: authState.creds.me?.id
+				},
+				options
+			),
+		newsletterRescheduleChannelPost: (
+			jid: string,
+			clientId: string,
+			content: AnyMessageContent,
+			publishAtMs: number,
+			options: ChannelScheduleOptions = {}
+		) =>
+			rescheduleChannelPost(
+				jid,
+				clientId,
+				content,
+				publishAtMs,
+				{
+					sendNode,
+					waUploadToServer,
+					userJid: authState.creds.me?.id,
+					query,
+					generateMessageTag
+				},
+				options
+			),
+		newsletterSendChannelPostNow: (
+			jid: string,
+			clientId: string,
+			content: AnyMessageContent,
+			options: ChannelScheduleOptions = {}
+		) =>
+			sendChannelPostNow(
+				jid,
+				clientId,
+				content,
+				{
+					sendNode,
+					waUploadToServer,
+					userJid: authState.creds.me?.id,
+					query,
+					generateMessageTag
+				},
+				options
+			),
+		newsletterCancelChannelPost: (jid: string, clientId: string) =>
+			cancelChannelPost(jid, clientId, { query, generateMessageTag }),
+		newsletterFetchChannelScheduledPosts: (jid: string, options: ChannelScheduleFetchOptions) =>
+			fetchChannelScheduledPosts(jid, options, { query, generateMessageTag }),
+		newsletterDirectorySearch: (searchText: string, options: NewsletterDirectorySearchOptions = {}) =>
+			searchNewsletterDirectory(searchText, options, { query, generateMessageTag }),
+		newsletterDirectoryList: (options: NewsletterDirectoryListOptions = {}) =>
+			listNewsletterDirectory(options, { query, generateMessageTag }),
 		pinMessage,
 		unpinMessage,
 		sendPersonalStatus,
@@ -1933,5 +2022,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		sendMessage,
 		sendPollVote,
+		newsletterSendPollVote: (jid: string, parentServerId: string | number, options: string | string[]) =>
+			sendNewsletterPollVote(jid, parentServerId, options, { query, generateMessageTag }),
 	}
 }
