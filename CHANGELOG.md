@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Contacts: add, edit and remove
+
+The contact controls were in the socket from the start but never listed
+here — they are the ones the bot's contact commands use:
+
+- **`sock.addOrEditContact(jid, contact)`** saves or updates a WhatsApp
+  contact for a JID. `contact` carries the name (`fullName` /
+  `firstName`) and the LID/phone JIDs; the contact is saved in WhatsApp
+  only, not in the phone's address book. Sent as a contact sync patch.
+- **`sock.removeContact(jid)`** removes a WhatsApp contact (a contact
+  sync patch with a null contact).
+
+### Pin safety and poll vote in LID-addressed groups (2026-11-21)
+
+- **Pin safety:** `sock.pinMessage(jid, key, duration?)` now refuses to
+  pin a message that is not in the chat — the message is looked up in
+  the store first, and a missing message (or one that belongs to another
+  chat) is refused instead of sent. Pinning a message that does not exist
+  got an account flagged, so the pin is only sent after the message is
+  found.
+- **Poll vote in LID-addressed groups:** `sock.sendPollVote(...)` now
+  uses the bot's LID as the voter id when the poll is LID-addressed
+  (creator JID, participant or addressing mode is a LID); otherwise it
+  uses the phone JID as before. Receivers decrypt a vote with the voter
+  id from the vote message's key, so the wrong form made the vote
+  undecryptable and it never counted — the send still succeeded, which is
+  how the 2026-11-21 "Alice" poll showed a vote sent but stayed 0/0.
+
 ### Poll voting (2026-11-21)
 
 No Baileys had a simple way to vote on a poll — every fork could only send a
