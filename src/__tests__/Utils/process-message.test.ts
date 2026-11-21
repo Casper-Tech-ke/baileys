@@ -1,5 +1,6 @@
 import type { WAMessage } from '../../Types'
-import { cleanMessage, getChatId } from '../../Utils/process-message'
+import { sha256 } from '../../Utils/crypto'
+import { cleanMessage, decryptPollVote, encryptPollVote, getChatId } from '../../Utils/process-message'
 
 const createBaseMessage = (key: Partial<WAMessage['key']>, message?: Partial<WAMessage['message']>): WAMessage => {
 	return {
@@ -185,5 +186,62 @@ describe('getChatId', () => {
 
 	it('throws when broadcast key has no participant', () => {
 		expect(() => getChatId({ remoteJid: '12345@broadcast', fromMe: false, id: 'X' })).toThrow(/missing participant/)
+	})
+})
+
+describe('encryptPollVote / decryptPollVote', () => {
+	const ctx = {
+		pollCreatorJid: '11111@s.whatsapp.net',
+		pollMsgId: 'POLLMSGID1234567890',
+		pollEncKey: new Uint8Array(32).fill(7),
+		voterJid: '22222@s.whatsapp.net'
+	}
+	const redHash = sha256(Buffer.from('Red'))
+	const blueHash = sha256(Buffer.from('Blue'))
+
+	it('round-trips: a vote encrypted with encryptPollVote decrypts back with decryptPollVote', () => {
+		const encrypted = encryptPollVote({ selectedOptions: [redHash, blueHash] }, ctx)
+		const decrypted = decryptPollVote(encrypted, ctx)
+
+		expect(decrypted.selectedOptions?.length).toBe(2)
+		expect(decrypted.selectedOptions?.map(option => Buffer.from(option).toString('hex'))).toEqual([
+			redHash.toString('hex'),
+			blueHash.toString('hex')
+		])
+	})
+
+	it('hashes option names with SHA-256', () => {
+		const encrypted = encryptPollVote({ selectedOptions: [redHash] }, ctx)
+		const decrypted = decryptPollVote(encrypted, ctx)
+
+		expect(decrypted.selectedOptions?.map(option => Buffer.from(option).toString('hex'))).toEqual([
+			sha256(Buffer.from('Red')).toString('hex')
+		])
+	})
+
+	it('uses a random 12-byte IV and appends a 16-byte GCM tag', () => {
+		const selectedOptions = [redHash, blueHash]
+		const first = encryptPollVote({ selectedOptions }, ctx)
+		const second = encryptPollVote({ selectedOptions }, ctx)
+
+		expect(first.encIv?.length).toBe(12)
+		// same vote twice must differ: the IV is random
+		expect(Buffer.from(first.encIv!).equals(Buffer.from(second.encIv!))).toBe(false)
+		// both still decrypt to the same vote
+		expect(decryptPollVote(first, ctx).selectedOptions?.length).toBe(2)
+		expect(decryptPollVote(second, ctx).selectedOptions?.length).toBe(2)
+
+		const plaintextLength = 2 * (1 + 1 + 32) // tag + length + 32-byte hash, per option
+		expect(first.encPayload?.length).toBe(plaintextLength + 16)
+	})
+
+	it('fails to decrypt when the voter changes (AAD binds the vote to the voter)', () => {
+		const encrypted = encryptPollVote({ selectedOptions: [redHash] }, ctx)
+		expect(() => decryptPollVote(encrypted, { ...ctx, voterJid: '33333@s.whatsapp.net' })).toThrow()
+	})
+
+	it('fails to decrypt when the poll creator changes (sign binds the vote to the poll)', () => {
+		const encrypted = encryptPollVote({ selectedOptions: [redHash] }, ctx)
+		expect(() => decryptPollVote(encrypted, { ...ctx, pollCreatorJid: '99999@s.whatsapp.net' })).toThrow()
 	})
 })

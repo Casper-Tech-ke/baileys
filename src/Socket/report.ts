@@ -1,7 +1,13 @@
 import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import type { WAMessage } from '../Types/Message'
-import { SPAM_FLOWS, type SpamReportOptions, type SpamReportResult } from '../Types/Report'
+import {
+	SPAM_FLOWS,
+	type SpamFlow,
+	type SpamReportOptions,
+	type SpamReportResult,
+	type SpamReportTargetResult
+} from '../Types/Report'
 import { extractReportingTokenContentForMessage } from '../Utils/reporting-utils'
 import { type BinaryNode, getBinaryNodeChild, isJidGroup, S_WHATSAPP_NET } from '../WABinary'
 
@@ -57,24 +63,15 @@ const messageTimestamp = (message: WAMessage): string => {
 	return typeof ts === 'number' ? String(ts) : ts.toString()
 }
 
+/** `spamFlow` is the established name here; `flow` is the alias other forks use. */
+const resolveSpamFlow = (options: SpamReportOptions, fallback: SpamFlow): SpamFlow =>
+	options.spamFlow ?? options.flow ?? fallback
+
 /**
- * Build the report IQ for one message. Shape from whatsapp-rust (the only
- * public client that sends one) plus the official app's flow strings and
- * `wi_trace_id`:
- *
- * <iq xmlns="spam" type="set" to="s.whatsapp.net">
- *   <spam_list spam_flow="…" wi_trace_id="…">
- *     <message id="…" t="…" from="…">
- *       <raw v="3" mediatype="…">…</raw>
- *     </message>
- *   </spam_list>
- * </iq>
- *
- * The `<raw>` bytes are the whitelisted-field content the reporting token is
- * an HMAC over, so the server can verify the reported content. The token
- * itself is NOT sent here — it was attached to the original message.
+ * Build one `<message>` node for a report: the message id, timestamp and
+ * sender, plus the `<raw>` payload the reporting token is an HMAC over.
  */
-export const buildSpamReportNode = (message: WAMessage, options: SpamReportOptions, meJid?: string): BinaryNode => {
+const buildSpamMessageNode = (message: WAMessage, meJid?: string): BinaryNode => {
 	const senderJid =
 		message.key.participantAlt ?? message.key.participant ?? (message.key.fromMe ? meJid : message.key.remoteJid)
 	const isGroup = !!message.key.remoteJid && isJidGroup(message.key.remoteJid)
@@ -110,12 +107,43 @@ export const buildSpamReportNode = (message: WAMessage, options: SpamReportOptio
 		}
 	}
 
+	return {
+		tag: 'message',
+		attrs: messageAttrs,
+		content: messageContent
+	}
+}
+
+/**
+ * Build the report IQ for one message. Shape from whatsapp-rust (the only
+ * public client that sends one) plus the official app's flow strings and
+ * `wi_trace_id`:
+ *
+ * <iq xmlns="spam" type="set" to="s.whatsapp.net">
+ *   <spam_list spam_flow="…" wi_trace_id="…" [jid="…"] [source="…"] [subject="…"]>
+ *     <message id="…" t="…" from="…">
+ *       <raw v="3" mediatype="…">…</raw>
+ *     </message>
+ *   </spam_list>
+ * </iq>
+ *
+ * The `<raw>` bytes are the whitelisted-field content the reporting token is
+ * an HMAC over, so the server can verify the reported content. The token
+ * itself is NOT sent here — it was attached to the original message.
+ * The `source` attribute (the reported member inside a group) and the `jid`
+ * attribute come from the app's own spam report builder (`J9G`).
+ */
+export const buildSpamReportNode = (message: WAMessage, options: SpamReportOptions, meJid?: string): BinaryNode => {
 	const spamListAttrs: Record<string, string> = {
-		spam_flow: options.spamFlow ?? SPAM_FLOWS.CHAT,
+		spam_flow: resolveSpamFlow(options, SPAM_FLOWS.CHAT),
 		wi_trace_id: options.traceId ?? generateTraceId()
 	}
 	if (options.groupJid) {
 		spamListAttrs.jid = options.groupJid
+	}
+
+	if (options.source) {
+		spamListAttrs.source = options.source
 	}
 
 	if (options.groupSubject) {
@@ -133,19 +161,68 @@ export const buildSpamReportNode = (message: WAMessage, options: SpamReportOptio
 			{
 				tag: 'spam_list',
 				attrs: spamListAttrs,
-				content: [
-					{
-						tag: 'message',
-						attrs: messageAttrs,
-						content: messageContent
-					}
-				]
+				content: [buildSpamMessageNode(message, meJid)]
 			}
 		]
 	}
 }
 
+/**
+ * Build the report IQ for a target JID (contact, group, channel) with no
+ * fixed message list: the `spam_list` carries the target `jid` plus the
+ * flow, `source` (reported member inside a group) and `subject`, and any
+ * messages passed in `options.messages`. This is the shape the app sends
+ * for an overflow-menu report, whose default flow is `overflow_menu_report`.
+ */
+export const buildTargetReportNode = (jid: string, options: SpamReportOptions = {}, meJid?: string): BinaryNode => {
+	const spamListAttrs: Record<string, string> = {
+		spam_flow: resolveSpamFlow(options, SPAM_FLOWS.OVERFLOW_MENU),
+		wi_trace_id: options.traceId ?? generateTraceId(),
+		jid
+	}
+	if (options.source) {
+		spamListAttrs.source = options.source
+	}
+
+	if (options.groupSubject) {
+		spamListAttrs.subject = options.groupSubject
+	}
+
+	return {
+		tag: 'iq',
+		attrs: {
+			xmlns: 'spam',
+			to: S_WHATSAPP_NET,
+			type: 'set'
+		},
+		content: [
+			{
+				tag: 'spam_list',
+				attrs: spamListAttrs,
+				content: (options.messages ?? []).map(message => buildSpamMessageNode(message, meJid))
+			}
+		]
+	}
+}
+
+/**
+ * Read the report id out of the server's reply. The app's own parser reads
+ * `<report id="…"/>`; older clients (and the doc comment in whatsapp-rust)
+ * describe a `<report_id>…</report_id>` text node. Both shapes are accepted
+ * so the id comes back whichever form the server sends.
+ */
 const parseReportId = (result: BinaryNode): string | null => {
+	const report = getBinaryNodeChild(result, 'report')
+	if (report) {
+		if (report.attrs.id) {
+			return report.attrs.id
+		}
+
+		if (typeof report.content === 'string' && report.content) {
+			return report.content
+		}
+	}
+
 	const node = getBinaryNodeChild(result, 'report_id')
 	if (!node?.content) {
 		return null
@@ -173,6 +250,30 @@ export const reportSpam = async (
 	}
 
 	return results
+}
+
+/**
+ * Report a target by JID (contact, group, channel) in a single IQ — the
+ * overflow-menu report shape. `options.flow` picks the flow (default
+ * `overflow_menu_report`); `options.source` names the reported member
+ * inside a group; `options.messages` attaches messages to the report.
+ * Returns one summary: the target, the flow, whether the server accepted
+ * it, the `report_id`, and the stanza that was sent.
+ */
+export const reportTarget = async (
+	jid: string,
+	deps: ReportDeps,
+	options: SpamReportOptions = {}
+): Promise<SpamReportTargetResult> => {
+	const node = buildTargetReportNode(jid, options, deps.meJid)
+	const result = await deps.query(node)
+	return {
+		jid,
+		flow: resolveSpamFlow(options, SPAM_FLOWS.OVERFLOW_MENU),
+		reported: true,
+		reportId: parseReportId(result),
+		node
+	}
 }
 
 /** Report a 1:1 contact (flow `chat`). */

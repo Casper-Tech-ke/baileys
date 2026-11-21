@@ -14,7 +14,7 @@ import type {
 	WAMessageKey
 } from '../Types'
 import type { PaymentInviteOptions, RequestPaymentOptions, SendPaymentOptions } from '../Types/Payment'
-import type { SpamReportOptions } from '../Types/Report'
+import type { SpamReportOptions, SpamReportResult, SpamReportTargetResult } from '../Types/Report'
 import { SPAM_FLOWS, SPAM_REPORT_REASONS } from '../Types/Report'
 import type { StickerPack } from '../Types/StickerPack'
 import type { SetUsernameOptions, UsernameSource } from '../Types/Username'
@@ -29,10 +29,12 @@ import {
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
 	encryptMediaRetryRequest,
+	encryptPollVote,
 	extractDeviceJids,
 	generateMessageIDV2,
 	generateParticipantHashV2,
 	generateWAMessage,
+	getKeyAuthor,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -40,6 +42,7 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	sha256,
 	shouldIncludeBizBinaryNode,
 	unixTimestampSeconds
 } from '../Utils'
@@ -106,7 +109,8 @@ import {
 	reportGroup,
 	reportNewsletter,
 	reportSpam,
-	reportStatus
+	reportStatus,
+	reportTarget
 } from './report.js'
 import { sendStickerPack } from './stickerPack.js'
 import {
@@ -1660,6 +1664,63 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		)
 	}
 
+	/**
+	 * Report spam two ways: by target JID (`sock.reportSpam(jid, options?)`,
+	 * one IQ, one summary) or by messages (`sock.reportSpam(messages,
+	 * options?)`, one IQ per message, one result per message).
+	 */
+	const reportSpamSocket = ((targetOrMessages: string | WAMessage[], options: SpamReportOptions = {}) =>
+		typeof targetOrMessages === 'string'
+			? reportTarget(targetOrMessages, reportDeps, options)
+			: reportSpam(targetOrMessages, reportDeps, options)) as {
+		(messages: WAMessage[], options?: SpamReportOptions): Promise<SpamReportResult[]>
+		(jid: string, options?: SpamReportOptions): Promise<SpamReportTargetResult>
+	}
+
+	/**
+	 * Vote on a poll by option name. The vote is encrypted with the poll
+	 * creation message's secret, so pass it in `pollInfo` — the fork does
+	 * not look the creation message up in any store. `creatorJid` defaults
+	 * to the author of `pollCreationMessageKey` (the same derivation the
+	 * vote decryption uses). The vote is sent through the raw
+	 * pollUpdateMessage passthrough, so no new send plumbing was needed.
+	 */
+	const sendPollVote = async (
+		jid: string,
+		pollCreationMessageKey: WAMessageKey,
+		options: string | string[],
+		pollInfo: { messageSecret: Uint8Array; creatorJid?: string }
+	) => {
+		const meIdNormalised = jidNormalizedUser(assertMeId(authState.creds))
+		const pollMsgId = pollCreationMessageKey.id
+		if (!pollMsgId) {
+			throw new Boom('pollCreationMessageKey needs an id', { statusCode: 400 })
+		}
+
+		const optionNames = Array.isArray(options) ? options : [options]
+		if (!optionNames.length) {
+			throw new Boom('sendPollVote needs at least one option', { statusCode: 400 })
+		}
+
+		const vote = encryptPollVote(
+			{ selectedOptions: optionNames.map(name => sha256(Buffer.from(name))) },
+			{
+				pollCreatorJid: pollInfo.creatorJid || getKeyAuthor(pollCreationMessageKey, meIdNormalised),
+				pollMsgId,
+				pollEncKey: pollInfo.messageSecret,
+				voterJid: meIdNormalised
+			}
+		)
+
+		return sendMessage(jid, {
+			pollUpdateMessage: {
+				pollCreationMessageKey,
+				vote,
+				senderTimestampMs: Date.now()
+			}
+		})
+	}
+
 	return {
 		...sock,
 		userDevicesCache,
@@ -1779,7 +1840,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		USERNAME_QUERY_IDS,
 		USERNAME_CHECK_RESULT,
 		USERNAME_SOURCE,
-		reportSpam: (messages: WAMessage[], options: SpamReportOptions = {}) => reportSpam(messages, reportDeps, options),
+		reportSpam: reportSpamSocket,
 		reportContact: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
 			reportContact(jid, messages, reportDeps, options),
 		reportGroup: (jid: string, messages: WAMessage[], options: SpamReportOptions = {}) =>
@@ -1871,5 +1932,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return message
 		},
 		sendMessage,
+		sendPollVote,
 	}
 }

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Block, report by JID and onWhatsApp (2026-11-21)
+
+The block, report and number-check surface now matches the shape other forks
+expose (verified against the app's own spam report builder, `J9G`):
+
+- **Block:** `sock.updateBlockStatus(jid, 'block' | 'unblock')` already accepted
+  a phone-number JID or a LID (it resolves the other side through the LID
+  mapping); `sock.fetchBlocklist()` returns the blocked JIDs.
+- **Report by JID:** `sock.reportSpam(jid, options?)` reports a contact, group
+  or channel in a single IQ and returns `{ jid, flow, reported, reportId,
+node }` (default flow `overflow_menu_report`). `options.flow` is an alias
+  of `spamFlow`, and `options.source` names the reported member inside a
+  group (the `spam_list` `source` attribute). `options.messages` attaches
+  messages to the report. The message-based `sock.reportSpam(messages,
+options?)` is unchanged.
+- **Flow names:** `SPAM_FLOWS` now covers the app's whole validated flow
+  enum — 36 report flows plus the 13 bare entry-point values — and also
+  exports the PascalCase aliases (`GroupInfoReport`, `OverflowMenuReport`,
+  `MessageMenu`, `ContactInfo`, `ChatInfoReport`, `StatusReport`, …) with
+  the identical wire values.
+- **Report id parsing:** the server's reply is now read from both shapes —
+  `<report id="…"/>` (the app's own parser) and `<report_id>…</report_id>`.
+- **Number check:** `sock.onWhatsApp('1234567890')` checks a single number
+  (or several) and returns `[{ jid, exists }]`.
+
 ### Channel status publishing & management (2026-11-21)
 
 Channel statuses can now be published and managed from the socket:
