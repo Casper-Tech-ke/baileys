@@ -1702,8 +1702,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 * creation message's secret, so pass it in `pollInfo` — the fork does
 	 * not look the creation message up in any store. `creatorJid` defaults
 	 * to the author of `pollCreationMessageKey` (the same derivation the
-	 * vote decryption uses). The vote is sent through the raw
-	 * pollUpdateMessage passthrough, so no new send plumbing was needed.
+	 * vote decryption uses). The voter JID is the bot's LID when the poll
+	 * is LID-addressed, else its phone JID — receivers decrypt with the
+	 * voter JID from the vote message's key, so the wrong form makes the
+	 * vote undecryptable and it never counts. The vote is sent through the
+	 * raw pollUpdateMessage passthrough, so no new send plumbing was needed.
 	 */
 	const sendPollVote = async (
 		jid: string,
@@ -1712,6 +1715,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		pollInfo: { messageSecret: Uint8Array; creatorJid?: string }
 	) => {
 		const meIdNormalised = jidNormalizedUser(assertMeId(authState.creds))
+		const meLidNormalised = authState.creds.me?.lid ? jidNormalizedUser(authState.creds.me.lid) : null
 		const pollMsgId = pollCreationMessageKey.id
 		if (!pollMsgId) {
 			throw new Boom('pollCreationMessageKey needs an id', { statusCode: 400 })
@@ -1722,13 +1726,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			throw new Boom('sendPollVote needs at least one option', { statusCode: 400 })
 		}
 
+		// The vote is decrypted by other clients with the voter JID from the
+		// vote message's key. In a LID-addressed group that is the voter's
+		// LID, but meIdNormalised is the phone JID — encrypting with it makes
+		// the vote fail AES-GCM auth on every client so it never counts, even
+		// though the send succeeds (2026-11-21, "Alice" poll: vote reported
+		// sent with an ID but the poll stayed 0/0). Use the LID when the poll
+		// is LID-addressed.
+		const creatorJid = pollInfo.creatorJid || getKeyAuthor(pollCreationMessageKey, meIdNormalised)
+		const voterJid = (creatorJid.endsWith('@lid') || pollCreationMessageKey.participant?.endsWith('@lid') || pollCreationMessageKey.addressingMode === 'lid') && meLidNormalised
+			? meLidNormalised
+			: meIdNormalised
+
 		const vote = encryptPollVote(
 			{ selectedOptions: optionNames.map(name => sha256(Buffer.from(name))) },
 			{
-				pollCreatorJid: pollInfo.creatorJid || getKeyAuthor(pollCreationMessageKey, meIdNormalised),
+				pollCreatorJid: creatorJid,
 				pollMsgId,
 				pollEncKey: pollInfo.messageSecret,
-				voterJid: meIdNormalised
+				voterJid
 			}
 		)
 
