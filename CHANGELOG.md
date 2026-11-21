@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Poll voting (2026-11-21)
+
+No Baileys had a simple way to vote on a poll — every fork could only send a
+vote that was already encrypted. The fork can now vote by option name:
+
+- **`sock.sendPollVote(jid, pollCreationMessageKey, options, pollInfo)`**
+  encrypts the vote and sends it through the raw `pollUpdateMessage`
+  passthrough. `options` is one option name or a list of them;
+  `pollInfo.messageSecret` is the poll creation message's
+  `messageContextInfo.messageSecret`, and `pollInfo.creatorJid` defaults
+  to the author of the creation key. The fork does not look the creation
+  message up in any store.
+- **`encryptPollVote(vote, ctx)`** (`src/Utils/process-message.ts`) is the
+  exact mirror of `decryptPollVote`: the same two-step HMAC-SHA256 key
+  derivation from the creation message's secret, AES-256-GCM with a random
+  12-byte IV and a 16-byte tag, over a `PollVoteMessage` of SHA-256 option
+  hashes — verified by round-trip tests against `decryptPollVote`.
+- The receive side is unchanged: incoming votes are still not decrypted
+  live (the commented-out block stays as it is).
+
 ### Block, report by JID and onWhatsApp (2026-11-21)
 
 The block, report and number-check surface now matches the shape other forks
